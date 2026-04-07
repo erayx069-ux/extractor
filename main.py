@@ -39,14 +39,32 @@ def log(msg, level="INFO"):
     else:
         logger.info(msg)
 
+# Parse arguments manually to handle --output-path from stealer.js
+target_output = None
+if "--output-path" in sys.argv:
+    try:
+        idx = sys.argv.index("--output-path")
+        if idx + 1 < len(sys.argv):
+            target_output = sys.argv[idx + 1]
+    except:
+        pass
+
 try:
-    if len(sys.argv) > 1:
-        base_path = sys.argv[1]
+    if target_output:
+        # If stealer.js passes the full .zip path, we use its directory + 'output'
+        target_path = pathlib.Path(target_output)
+        if target_path.suffix == '.zip':
+            OUTPUT_BASE_DIR = target_path.parent / 'output'
+        else:
+            OUTPUT_BASE_DIR = target_path / 'output'
+    elif len(sys.argv) > 1 and not sys.argv[1].startswith('-'):
+        OUTPUT_BASE_DIR = pathlib.Path(sys.argv[1]) / 'output'
     else:
-        base_path = os.path.dirname(os.path.abspath(__file__))
-    OUTPUT_BASE_DIR = pathlib.Path(base_path) / 'output'
-except:
+        OUTPUT_BASE_DIR = pathlib.Path(os.path.dirname(os.path.abspath(__file__))) / 'output'
+except Exception as e:
     OUTPUT_BASE_DIR = pathlib.Path(os.path.dirname(os.path.abspath(__file__))) / 'output'
+    log(f"Error determining output directory, falling back to default: {e}", "WARNING")
+
 
 log(f"Output base directory: {OUTPUT_BASE_DIR}")
 
