@@ -39,23 +39,14 @@ def log(msg, level="INFO"):
     else:
         logger.info(msg)
 
-import argparse
-
-def parse_args():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--output-path', type=str, help='Base output directory')
-    # Fallback for old way where it might be the first positional arg
-    parser.add_argument('positional_path', nargs='?', type=str, help='Base output directory (positional)')
-    return parser.parse_known_args()
-
-args, unknown = parse_args()
-
-if args.output_path:
-    OUTPUT_BASE_DIR = pathlib.Path(args.output_path)
-elif args.positional_path:
-    OUTPUT_BASE_DIR = pathlib.Path(args.positional_path) / 'Vanish_Output'
-else:
-    OUTPUT_BASE_DIR = pathlib.Path(os.path.dirname(os.path.abspath(__file__))) / 'Vanish_Output'
+try:
+    if len(sys.argv) > 1:
+        base_path = sys.argv[1]
+    else:
+        base_path = os.path.dirname(os.path.abspath(__file__))
+    OUTPUT_BASE_DIR = pathlib.Path(base_path) / 'output'
+except:
+    OUTPUT_BASE_DIR = pathlib.Path(os.path.dirname(os.path.abspath(__file__))) / 'output'
 
 log(f"Output base directory: {OUTPUT_BASE_DIR}")
 
@@ -857,6 +848,19 @@ if __name__ == "__main__":
         except Exception as e:
             log(f"Error processing {name}: {e}", "ERROR")
 
+    log(f"{'='*60}")
+    log(f"Zipping output...")
+    try:
+        if OUTPUT_BASE_DIR.exists():
+            zip_base_name = str(OUTPUT_BASE_DIR)
+            shutil.make_archive(zip_base_name, 'zip', OUTPUT_BASE_DIR)
+            zip_path = f"{zip_base_name}.zip"
+            zip_size = os.path.getsize(zip_path) if os.path.exists(zip_path) else 0
+            log(f"Output zipped: {zip_path} ({zip_size} bytes)")
+        else:
+            log(f"Output directory does not exist, nothing to zip", "WARNING")
+    except Exception as e:
+        log(f"Failed to create zip archive: {e}", "ERROR")
     log(f"{'='*60}")
     log(f"Done!")
     log(f"{'='*60}")
