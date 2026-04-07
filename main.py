@@ -39,13 +39,22 @@ def log(msg, level="INFO"):
     else:
         logger.info(msg)
 
-try:
-    if len(sys.argv) > 1:
-        base_path = sys.argv[1]
-    else:
-        base_path = os.path.dirname(os.path.abspath(__file__))
-    OUTPUT_BASE_DIR = pathlib.Path(base_path) / 'Vanish_Output'
-except:
+import argparse
+
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--output-path', type=str, help='Base output directory')
+    # Fallback for old way where it might be the first positional arg
+    parser.add_argument('positional_path', nargs='?', type=str, help='Base output directory (positional)')
+    return parser.parse_known_args()
+
+args, unknown = parse_args()
+
+if args.output_path:
+    OUTPUT_BASE_DIR = pathlib.Path(args.output_path)
+elif args.positional_path:
+    OUTPUT_BASE_DIR = pathlib.Path(args.positional_path) / 'Vanish_Output'
+else:
     OUTPUT_BASE_DIR = pathlib.Path(os.path.dirname(os.path.abspath(__file__))) / 'Vanish_Output'
 
 log(f"Output base directory: {OUTPUT_BASE_DIR}")
