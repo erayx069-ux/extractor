@@ -857,6 +857,13 @@ if __name__ == "__main__":
             zip_path = f"{zip_base_name}.zip"
             zip_size = os.path.getsize(zip_path) if os.path.exists(zip_path) else 0
             log(f"Output zipped: {zip_path} ({zip_size} bytes)")
+            
+            # Remove the output folder after zipping
+            try:
+                shutil.rmtree(OUTPUT_BASE_DIR)
+                log(f"Temporary output directory removed.")
+            except Exception as e:
+                log(f"Failed to remove output directory: {e}", "WARNING")
         else:
             log(f"Output directory does not exist, nothing to zip", "WARNING")
     except Exception as e:
