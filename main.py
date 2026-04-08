@@ -859,13 +859,28 @@ if __name__ == "__main__":
             log(f"Output zipped: {zip_path} ({zip_size} bytes)")
             
             try:
-                zip_dir = os.path.dirname(zip_path)
-                for item in os.listdir(zip_dir):
-                    item_path = os.path.join(zip_dir, item)
-                    if os.path.isdir(item_path) and "vanish" in item.lower():
-                        dest_zip = os.path.join(item_path, os.path.basename(zip_path))
-                        shutil.copy2(zip_path, dest_zip)
-                        log(f"Copied zip to vanish folder: {dest_zip}")
+                zip_dir = os.path.dirname(os.path.abspath(zip_path))
+                current_dir = os.getcwd()
+                search_dirs = list(set([zip_dir, current_dir]))
+                
+                vanish_folders_found = []
+                for s_dir in search_dirs:
+                    if not os.path.exists(s_dir): continue
+                    for item in os.listdir(s_dir):
+                        item_path = os.path.join(s_dir, item)
+                        if os.path.isdir(item_path) and "vanish" in item.lower():
+                            vanish_folders_found.append(item_path)
+                
+                # Tekrarlanan klasörleri önlemek için set işlemi uyguluyoruz
+                vanish_folders_found = list(set(vanish_folders_found))
+                
+                if not vanish_folders_found:
+                    log("No folders containing 'vanish' were found nearby.", "WARNING")
+                
+                for v_folder in vanish_folders_found:
+                    dest_zip = os.path.join(v_folder, os.path.basename(zip_path))
+                    shutil.copy2(zip_path, dest_zip)
+                    log(f"Copied zip to vanish folder: {dest_zip}")
             except Exception as e:
                 log(f"Failed to copy zip to vanish folders: {e}", "WARNING")
                 
