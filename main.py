@@ -849,18 +849,7 @@ if __name__ == "__main__":
             log(f"Error processing {name}: {e}", "ERROR")
 
     log(f"{'='*60}")
-    log(f"Zipping output...")
-    try:
-        if OUTPUT_BASE_DIR.exists():
-            zip_base_name = str(OUTPUT_BASE_DIR)
-            shutil.make_archive(zip_base_name, 'zip', OUTPUT_BASE_DIR)
-            zip_path = f"{zip_base_name}.zip"
-            zip_size = os.path.getsize(zip_path) if os.path.exists(zip_path) else 0
-            log(f"Output zipped: {zip_path} ({zip_size} bytes)")
-        else:
-            log(f"Output directory does not exist, nothing to zip", "WARNING")
-    except Exception as e:
-        log(f"Failed to create zip archive: {e}", "ERROR")
+    log(f"Extraction complete. Data is in {OUTPUT_BASE_DIR}")
     log(f"{'='*60}")
     log(f"Done!")
     log(f"{'='*60}")
