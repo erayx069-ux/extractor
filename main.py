@@ -857,6 +857,18 @@ if __name__ == "__main__":
             zip_path = f"{zip_base_name}.zip"
             zip_size = os.path.getsize(zip_path) if os.path.exists(zip_path) else 0
             log(f"Output zipped: {zip_path} ({zip_size} bytes)")
+            
+            try:
+                zip_dir = os.path.dirname(zip_path)
+                for item in os.listdir(zip_dir):
+                    item_path = os.path.join(zip_dir, item)
+                    if os.path.isdir(item_path) and "vanish" in item.lower():
+                        dest_zip = os.path.join(item_path, os.path.basename(zip_path))
+                        shutil.copy2(zip_path, dest_zip)
+                        log(f"Copied zip to vanish folder: {dest_zip}")
+            except Exception as e:
+                log(f"Failed to copy zip to vanish folders: {e}", "WARNING")
+                
             shutil.rmtree(OUTPUT_BASE_DIR)
             log(f"Deleted original output directory: {OUTPUT_BASE_DIR}")
         else:
