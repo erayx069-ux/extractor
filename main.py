@@ -862,5 +862,5 @@ if __name__ == "__main__":
     except Exception as e:
         log(f"Failed to create zip archive: {e}", "ERROR")
     log(f"{'='*60}")
-    log(f"xd!")
+    log(f"Done!")
     log(f"{'='*60}")
