@@ -723,10 +723,6 @@ def main():
     parser.add_argument('--output-path', required=False)
     args = parser.parse_args()
     print("[*] Browser data collection started...")
-    if is_admin():
-        print("[+] Program Yonetici (Admin) yetkileriyle calisiyor.")
-    else:
-        print("[-] Program normal yetkilerle calisiyor (Yonetici degil).")
     kill_browser_processes()
     time.sleep(1)
     out = args.output_path if args.output_path else "output"
@@ -747,15 +743,10 @@ def main():
     print("[*] Operation completed. Data saved to 'output' folder.")
 
 if __name__ == "__main__":
-    if not is_admin():
-        print("[*] Yonetici izni isteniyor...")
-        args_str = subprocess.list2cmdline(sys.argv[1:])
-        ret = ctypes.windll.shell32.ShellExecuteW(None, "runas", sys.executable, args_str, None, 1)
-        if ret > 32:
-            sys.exit(0)
-        else:
-            print("[!] Yonetici izni reddedildi, normal yetkilerle devam ediliyor...")
-
+    if is_admin():
+        print("[+] YONETICI OLARAK CALISIYOR")
+    else:
+        print("[-] NORMAL KULLANICI OLARAK CALISIYOR")
     try:
         main()
     except Exception as e:
